@@ -310,7 +310,12 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         itemsA: [FeedItem], itemsB: [FeedItem],
         axisMax: Double, railOnLeft: Bool, version: Int
     ) {
-        guard version != contentVersion else { return }
+        // The version is the intended signal, but a wrong version silently strands the
+        // feed on stale data with no error anywhere — which is exactly how build 0.1 (1)
+        // shipped a permanently black feed. Comparing counts as well costs nothing and
+        // turns that failure mode from silent-wrong into self-healing.
+        let contentChanged = itemsA.count != self.itemsA.count || itemsB.count != self.itemsB.count
+        guard version != contentVersion || contentChanged else { return }
         contentVersion = version
 
         self.itemsA = itemsA

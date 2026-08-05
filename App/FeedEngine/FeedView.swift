@@ -210,6 +210,9 @@ struct FeedView: View {
     let axisMax: Double
     let railOnLeft: Bool
     @Binding var filter: FilterState
+    /// Bumped by whatever supplies the items whenever they are replaced. Without it the
+    /// feed cannot tell "same filter, new photos" from "nothing changed".
+    var contentVersion: Int = 0
     var kidName: (Kid) -> String = { $0 == .a ? "Older" : "Younger" }
     var onToggleFavorite: (FeedItem) -> Void = { _ in }
     var onOpenSettings: () -> Void = {}
@@ -242,7 +245,8 @@ struct FeedView: View {
             FeedRepresentable(
                 itemsA: filteredA, itemsB: filteredB,
                 axisMax: axisMax, railOnLeft: railOnLeft,
-                version: filter.hashValue,
+                version: FeedVersion.compute(filter: filter, contentVersion: contentVersion,
+                                             axisMax: axisMax, railOnLeft: railOnLeft),
                 controller: controller,
                 initialAge: Self.debugStartAge,
                 onSelect: { selected = $0 }

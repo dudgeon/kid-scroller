@@ -17,6 +17,12 @@ final class LibraryIndexer: ObservableObject {
     @Published private(set) var lastError: String?
     /// True once real data has landed, whether from cache or a fresh enumeration.
     @Published private(set) var hasContent = false
+    /// Increments every time the item arrays are replaced.
+    ///
+    /// The feed's UIKit bridge skips reconfiguration when its version is unchanged, so
+    /// that version has to move whenever the *content* moves. Deriving it from the filter
+    /// alone silently strands the feed on the empty arrays it was first rendered with.
+    @Published private(set) var generation = 0
 
     private var observer: ChangeObserver?
     private let store: IndexStoring
@@ -36,6 +42,7 @@ final class LibraryIndexer: ObservableObject {
             itemsA = snapshot.itemsA
             itemsB = snapshot.itemsB
             hasContent = !(snapshot.itemsA.isEmpty && snapshot.itemsB.isEmpty)
+            generation += 1
         }
         await refresh(kids: kids)
         startObserving(kids: kids)
@@ -68,6 +75,7 @@ final class LibraryIndexer: ObservableObject {
         itemsA = a
         itemsB = b
         hasContent = !(a.isEmpty && b.isEmpty)
+        generation += 1
 
         if a.isEmpty && b.isEmpty {
             lastError = "Neither album has photos with capture dates. Check the albums in Settings."

@@ -33,6 +33,56 @@ struct RootView: View {
     @State private var synthetic = SyntheticLibrary.makeItems()
     @State private var showingSettings = false
 
+    /// The feed is black by design, so an empty feed is indistinguishable from a broken
+    /// one. This makes every non-content state say what it is.
+    @ViewBuilder
+    private var indexStatus: some View {
+        if indexer.isIndexing && !indexer.hasContent {
+            VStack(spacing: 14) {
+                ProgressView().tint(.white)
+                Text("Reading your albums…")
+                    .font(.callout).foregroundStyle(.white.opacity(0.85))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+
+        } else if !indexer.isIndexing && !indexer.hasContent {
+            VStack(spacing: 14) {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.largeTitle).foregroundStyle(.white.opacity(0.5))
+                Text("No photos to show")
+                    .font(.headline).foregroundStyle(.white)
+                Text(indexer.lastError ??
+                     "The albums you picked came back empty. Photos need a capture date to be placed on the age axis.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                HStack(spacing: 12) {
+                    Button("Try again") {
+                        Task { await indexer.refresh(kids: state.kids) }
+                    }
+                    Button("Settings") { showingSettings = true }
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+
+        } else if indexer.isIndexing {
+            // Refreshing over content already on screen — stay out of the way.
+            VStack {
+                Text("Updating…")
+                    .font(.caption).padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 8)
+                Spacer()
+            }
+        }
+    }
+
     var body: some View {
         Group {
             if Self.useSynthetic {
@@ -50,6 +100,7 @@ struct RootView: View {
                     axisMax: state.axisMaxMonths,
                     railOnLeft: state.railOnLeft,
                     filter: $state.filter,
+                    contentVersion: indexer.generation,
                     kidName: { kid in
                         // Ribbon A is always the older kid; the axis runs to their age.
                         kid == .a ? (state.older?.name ?? "Older") : (state.younger?.name ?? "Younger")
@@ -65,14 +116,7 @@ struct RootView: View {
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(indexer: indexer).environmentObject(state)
                 }
-                .overlay(alignment: .top) {
-                    if indexer.isIndexing {
-                        Text("Indexing…")
-                            .font(.caption).padding(.horizontal, 10).padding(.vertical, 5)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .padding(.top, 8)
-                    }
-                }
+                .overlay { indexStatus }
                 .task(id: state.kids) {
                     // Renders the cached snapshot first, then re-enumerates (R24).
                     await indexer.start(kids: state.kids)
