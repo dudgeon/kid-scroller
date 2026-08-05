@@ -48,7 +48,17 @@ struct RootView: View {
                     itemsB: indexer.itemsB,
                     axisMax: state.axisMaxMonths,
                     railOnLeft: state.railOnLeft,
-                    filter: $state.filter
+                    filter: $state.filter,
+                    kidName: { kid in
+                        // Ribbon A is always the older kid; the axis runs to their age.
+                        kid == .a ? (state.older?.name ?? "Older") : (state.younger?.name ?? "Younger")
+                    },
+                    onToggleFavorite: { item in
+                        Task {
+                            await indexer.setFavorite(item.isFavorite, itemID: item.id,
+                                                      assetIdentifier: item.assetIdentifier)
+                        }
+                    }
                 )
                 .overlay(alignment: .top) {
                     if indexer.isIndexing {

@@ -1,15 +1,26 @@
 import UIKit
+import Photos
 import SameAgeCore
 
 /// One photo slot in a ribbon. Pooled and recycled; never allocated during a scroll.
 final class RibbonCellView: UIView {
+    private let imageView = UIImageView()
     private let label = UILabel()
     private let glyph = UILabel()
+
+    /// In-flight PhotoKit request, cancelled if the cell is recycled before it lands.
+    private var requestID: PHImageRequestID?
+    /// Guards against a slow request resolving into a cell that has since been reused.
+    private var currentItemID: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         layer.cornerRadius = 10
         layer.masksToBounds = true
+
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        addSubview(imageView)
 
         glyph.font = .systemFont(ofSize: 22)
         glyph.textAlignment = .center
@@ -29,24 +40,48 @@ final class RibbonCellView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        imageView.frame = bounds
         glyph.frame = bounds
         let size = label.intrinsicContentSize
         label.frame = CGRect(x: 6, y: bounds.height - size.height - 10,
                              width: size.width + 12, height: size.height + 4)
     }
 
-    /// Placeholder rendering until the PhotoKit image pipeline is wired in: a stable
-    /// per-item colour plus the age tag, so the physics can be verified visually.
-    func configure(with item: FeedItem) {
+    func configure(with item: FeedItem, targetSize: CGSize) {
+        currentItemID = item.id
+
+        // A stable per-item colour shows immediately and stays visible behind an image
+        // that is still loading — or permanently, for synthetic fixtures with no asset.
         var hash = 5381
         for byte in item.assetIdentifier.utf8 { hash = ((hash << 5) &+ hash) &+ Int(byte) }
         let hue = CGFloat(abs(hash) % 360) / 360
         let tint: CGFloat = item.kid == .a ? 0.09 : 0.58   // warm for A, cool for B
         backgroundColor = UIColor(hue: (hue * 0.12 + tint).truncatingRemainder(dividingBy: 1),
                                   saturation: 0.62, brightness: 0.72, alpha: 1)
+
         glyph.text = item.kind == .video ? "▶" : (item.kind == .livePhoto ? "◉" : "")
         label.text = "  \(AgeFormatter.short(months: item.ageMonths))\(item.isFavorite ? " ♥" : "")  "
+        imageView.image = nil
+
+        let scale = UIScreen.main.scale
+        let pixelSize = CGSize(width: targetSize.width * scale, height: targetSize.height * scale)
+        requestID = ThumbnailProvider.shared.request(
+            identifier: item.assetIdentifier, targetSize: pixelSize
+        ) { [weak self] image, _ in
+            // The cell may have been recycled onto a different item while this was in
+            // flight; dropping the result is what stops photos landing in wrong slots.
+            guard let self, self.currentItemID == item.id, let image else { return }
+            self.imageView.image = image
+        }
         setNeedsLayout()
+    }
+
+    /// Cancels any in-flight request and clears state before the cell goes back in the pool.
+    func prepareForReuse() {
+        if let requestID { ThumbnailProvider.shared.cancel(requestID) }
+        requestID = nil
+        currentItemID = nil
+        imageView.image = nil
     }
 }
 
@@ -54,16 +89,25 @@ final class RibbonCellView: UIView {
 final class RibbonColumnView: UIView {
     private var mapping: RibbonMapping = .empty
     private var live: [String: RibbonCellView] = [:]
+    private var liveItems: [String: FeedItem] = [:]
     private var free: [RibbonCellView] = []
     private var ghosted = false
+
+    /// The item under a point in this column's coordinate space, if any (R17).
+    func item(at point: CGPoint) -> FeedItem? {
+        for (id, cell) in live where cell.frame.contains(point) { return liveItems[id] }
+        return nil
+    }
 
     func setMapping(_ mapping: RibbonMapping) {
         self.mapping = mapping
         for (_, cell) in live { recycle(cell) }
         live.removeAll()
+        liveItems.removeAll()
     }
 
     private func recycle(_ cell: RibbonCellView) {
+        cell.prepareForReuse()          // cancels any in-flight PhotoKit request
         cell.removeFromSuperview()
         if free.count < 40 { free.append(cell) }
     }
@@ -91,9 +135,11 @@ final class RibbonColumnView: UIView {
                 cell = existing
             } else {
                 cell = dequeue()
-                cell.configure(with: placed.item)
+                cell.configure(with: placed.item,
+                               targetSize: CGSize(width: bounds.width, height: placed.height))
                 addSubview(cell)
                 live[id] = cell
+                liveItems[id] = placed.item
             }
             cell.frame = CGRect(x: 0,
                                 y: readingLine + (placed.top - columnOffset),
@@ -104,6 +150,7 @@ final class RibbonColumnView: UIView {
         for (id, cell) in live where !stillVisible.contains(id) {
             recycle(cell)
             live.removeValue(forKey: id)
+            liveItems.removeValue(forKey: id)
         }
 
         // D3 / R3: when this kid has no photos near the current age, the held photo
@@ -155,6 +202,8 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
     var onAgeChange: ((Double) -> Void)?
     /// Fires once the user has stopped scrolling *and* lifted their finger (R15).
     var onSettled: ((Double) -> Void)?
+    /// Tapping a photo opens it fullscreen (R17).
+    var onSelect: ((FeedItem) -> Void)?
 
     private var settleWork: DispatchWorkItem?
 
@@ -173,6 +222,21 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         scrollView.alwaysBounceVertical = true
         scrollView.addSubview(sizingView)
         addSubview(scrollView)   // on top: it owns the pan gesture
+
+        // The scroll view sits above the columns, so the tap has to be handled here and
+        // hit-tested down into whichever column was touched.
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        scrollView.addGestureRecognizer(tap)
+    }
+
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: self)
+        for column in [columnA, columnB] {
+            if let item = column.item(at: convert(point, to: column)) {
+                onSelect?(item)
+                return
+            }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) unused") }

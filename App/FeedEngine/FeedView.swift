@@ -25,6 +25,7 @@ struct FeedRepresentable: UIViewRepresentable {
     /// Debug only: `-startAge <months>` jumps the feed on launch, so a given point in the
     /// timeline can be screenshotted deterministically without simulating gestures.
     let initialAge: Double?
+    let onSelect: (FeedItem) -> Void
 
     func makeUIView(context: Context) -> FeedUIView {
         let view = FeedUIView(frame: .zero)
@@ -32,6 +33,7 @@ struct FeedRepresentable: UIViewRepresentable {
             guard let controller, abs(controller.age - age) > 0.0001 else { return }
             controller.age = age
         }
+        view.onSelect = onSelect
         controller.view = view
         view.configure(itemsA: itemsA, itemsB: itemsB, axisMax: axisMax,
                        railOnLeft: railOnLeft, version: version)
@@ -197,6 +199,10 @@ struct FeedView: View {
     let axisMax: Double
     let railOnLeft: Bool
     @Binding var filter: FilterState
+    var kidName: (Kid) -> String = { $0 == .a ? "Older" : "Younger" }
+    var onToggleFavorite: (FeedItem) -> Void = { _ in }
+
+    @State private var selected: FeedItem?
 
     /// `@State`, not `@StateObject`, on purpose: this view must NOT re-render when the age
     /// changes, or every scroll frame would re-filter both ribbons. Only `AgeRailView`
@@ -226,7 +232,8 @@ struct FeedView: View {
                 axisMax: axisMax, railOnLeft: railOnLeft,
                 version: filter.hashValue,
                 controller: controller,
-                initialAge: Self.debugStartAge
+                initialAge: Self.debugStartAge,
+                onSelect: { selected = $0 }
             )
             .ignoresSafeArea(edges: .bottom)
 
@@ -247,6 +254,19 @@ struct FeedView: View {
         }
         .sheet(isPresented: $showingFilters) {
             FilterSheet(filter: $filter)
+        }
+        .fullScreenCover(item: $selected) { item in
+            // The counterpart is the nearest photo *by age* in the other ribbon (R18),
+            // drawn from the filtered pool so it honours the current filters.
+            FullscreenView(
+                tapped: item,
+                counterpart: CounterpartFinder.nearest(
+                    toAge: item.ageMonths,
+                    in: item.kid == .a ? filteredB : filteredA
+                ),
+                name: kidName,
+                onToggleFavorite: onToggleFavorite
+            )
         }
         .statusBarHidden()
     }
