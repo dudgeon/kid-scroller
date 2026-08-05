@@ -1,0 +1,26 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+!*.xcodeproj/project.pbxproj
+xcuserdata/
+DerivedData/
+build/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+
+# XcodeGen writes the project; project.yml is the source of truth.
+SameAge.xcodeproj/
+
+# Swift Package Manager / build output
+.build/
+.build-sim/
+.swiftpm/
+Package.resolved
+
+# Secrets — App Store Connect API key ids, team id
+.env
+*.p8
+
+# macOS
+.DS_Store
