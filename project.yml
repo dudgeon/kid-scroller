@@ -32,6 +32,9 @@ targets:
         CFBundleDisplayName: SameAge
         CFBundleShortVersionString: "0.1"
         CFBundleVersion: "1"
+        # Mandatory since the iOS 11 SDK; App Store Connect rejects uploads without it.
+        # Must match the asset-catalog icon set name below.
+        CFBundleIconName: AppIcon
         UILaunchScreen: {}
         # R: iPhone portrait only.
         UISupportedInterfaceOrientations:
@@ -50,6 +53,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.dudgeon.sameage
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"

@@ -9,7 +9,11 @@
 # The App Store Connect app record must already exist for --upload; there is no API
 # to create one, so that step is browser-only and done once.
 
-set -euo pipefail
+# Deliberately no `pipefail`: several display-only pipes end in `head`/`tail`, which
+# close the pipe early and hand the producer a SIGPIPE. Under pipefail that aborts the
+# whole release with exit 141 and no output. Every command whose failure actually
+# matters (xcodebuild, swift test) is unpiped or checked explicitly.
+set -eu
 
 cd "$(dirname "$0")/.."
 
@@ -34,7 +38,8 @@ if [[ ! -f "$ASC_KEY_PATH" ]]; then
   exit 1
 fi
 
-XCODE_VERSION="$(xcodebuild -version | head -1)"
+# `sed -n 1p` rather than `head -1`: sed drains the stream instead of closing the pipe.
+XCODE_VERSION="$(xcodebuild -version 2>/dev/null | sed -n '1p')"
 case "$XCODE_VERSION" in
   "Xcode 2"[6-9]*) ;;
   *) echo "error: $XCODE_VERSION cannot upload. Apple requires Xcode 26 or later." >&2; exit 1 ;;
@@ -59,7 +64,15 @@ command -v xcodegen >/dev/null || { echo "error: xcodegen not installed (brew in
 xcodegen generate >/dev/null
 
 echo "==> Testing"
-(cd Packages/SameAgeCore && swift test 2>&1 | tail -3)
+# Capture rather than pipe: piping into `tail` closes the pipe early, and under
+# `set -o pipefail` the resulting SIGPIPE aborts the whole release.
+TEST_LOG="$(mktemp -t sameage-tests)"
+if ! (cd Packages/SameAgeCore && swift test > "$TEST_LOG" 2>&1); then
+  echo "error: tests failed" >&2
+  tail -30 "$TEST_LOG" >&2
+  exit 1
+fi
+grep -E "Executed [0-9]+ tests" "$TEST_LOG" | tail -1
 
 echo "==> Archiving ($XCODE_VERSION)"
 rm -rf "$ARCHIVE"
