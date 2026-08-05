@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- TestFlight and the App Store share this distribution method. -->
+    <key>method</key>
+    <string>app-store-connect</string>
+
+    <key>teamID</key>
+    <string>R39EF29X3Y</string>
+
+    <!-- "export" writes a local .ipa; switch to "upload" to send it to App Store Connect
+         in the same step. Kept as export by default so a build can be inspected before
+         anything leaves the machine. -->
+    <key>destination</key>
+    <string>export</string>
+
+    <!-- Automatic signing lets -allowProvisioningUpdates create and renew the Apple
+         Distribution certificate and provisioning profile through the API key. -->
+    <key>signingStyle</key>
+    <string>automatic</string>
+
+    <!-- Symbols make TestFlight crash reports readable. -->
+    <key>uploadSymbols</key>
+    <true/>
+
+    <!-- Let App Store Connect manage the build number so uploads never collide. -->
+    <key>manageAppVersionAndBuildNumber</key>
+    <true/>
+</dict>
+</plist>
