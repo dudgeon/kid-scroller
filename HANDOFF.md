@@ -1,7 +1,10 @@
 # SameAge — session handoff
 
-**Last updated:** 2026-08-05, immediately before the macOS Tahoe 26 upgrade.
-**Read this first, then [PLAN.md](PLAN.md) for the full architecture and TestFlight runbook.**
+**Last updated:** 2026-08-05, after the first build shipped to TestFlight.
+**Read this first, then [PLAN.md](PLAN.md) for the full architecture.**
+
+**Status: shipping.** Build `0.1 (1)` is live on TestFlight, *Ready to Submit*, distributed to
+the `Internal` group. The toolchain, signing chain and upload path are all proven.
 
 ---
 
@@ -9,21 +12,33 @@
 
 ```bash
 cd /Users/geoffreydudgeon/repos/kid-scroller
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # see §2 — may be unnecessary after the upgrade
-swift test --package-path Packages/SameAgeCore                    # expect 44 tests, 0 failures
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # still required — see §2
+swift test --package-path Packages/SameAgeCore                    # expect 51 tests, 0 failures
 xcodegen generate                                                 # SameAge.xcodeproj is gitignored/generated
 ```
 
-**First things to check after the Tahoe upgrade** (in this order):
+Ship a new build:
 
-1. `sw_vers -productVersion` → expect `26.x`.
-2. `xcodebuild -version` → **if this still says 16.3, Xcode 26.6 is not installed yet.** Install it, then
-   `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` (needs the user's password — the agent cannot run it).
-3. `xcrun --sdk iphoneos --show-sdk-version` → must be `26.x` before *any* TestFlight attempt.
-4. Simulator runtimes: `xcrun simctl list runtimes`. The old iOS 18.4 device may not survive the upgrade; recreate with
-   `xcrun simctl create "SameAge-Dev" "iPhone 16 Pro" <runtime-id>`.
-5. **Confirm Apple Developer Program membership** at `developer.apple.com/account` → Membership details.
-   The user reports being signed in already; this was never actually verified in-session and is still open (task #1).
+```bash
+./scripts/release.sh --upload
+```
+
+That regenerates the project, runs the tests, archives, and uploads. Automatic distribution is on
+for the `Internal` group, so a processed build reaches the phone with no further clicks. Bump
+`CFBundleShortVersionString` in `project.yml` for a new version; App Store Connect manages build
+numbers itself (`manageAppVersionAndBuildNumber`), so build collisions are not a concern.
+
+### Live identifiers
+
+| | |
+|---|---|
+| App Store Connect app | **SameAgeScroller**, id `6798406752` (name "SameAge" was already taken) |
+| Bundle ID | `org.dudgeon.sameage` |
+| Team | `R39EF29X3Y` — Apple Developer Program, Individual, renews 2027-04-25 |
+| ASC API key | `sameage-agent`, Key ID `63X6QKKH2A`, Admin |
+| Issuer ID | `69a6de71-3415-47e3-e053-5b8c7c11a4d1` |
+| Key file | `~/.appstoreconnect/private_keys/AuthKey_63X6QKKH2A.p8` (chmod 600, **one-time download — cannot be re-fetched**) |
+| TestFlight group | `Internal`, automatic distribution enabled, 1 tester (dudgeon@gmail.com) |
 
 ---
 
@@ -129,33 +144,38 @@ Two traps already hit and fixed here; don't reintroduce them:
 
 ## 5. What is NOT done
 
-| # | Work | Blocked by |
-|---|---|---|
-| 5 | Image pipeline — `PHCachingImageManager`, opportunistic delivery as the R25 iCloud placeholder. Cells are still coloured placeholders. | nothing |
-| 5 | Contacts birthday prefill (R9) — the picker exists, `CNContactPickerViewController` prefill does not | nothing |
-| 6 | Fullscreen (R17), counterpart inset + tap-to-swap (D7/R18), share composite (R19), Live Photo motion (R16) | nothing |
-| 5 | Index persistence — `IndexStore` snapshot so launch is instant (R24). Currently re-enumerates each launch. | nothing |
-| — | Settings screen — edit birthdays, re-pick albums, rail side toggle (R10) | nothing |
-| — | Video autoplay (R15) — `onSettled` already fires correctly after 1s idle; no `AVPlayerLayer` attached yet | nothing |
-| 7 | **TestFlight** | Xcode 26 + membership confirmation |
+Everything in the spec is now built and shipped except the following. **None of it is blocked** —
+the toolchain, signing and upload path are all working.
 
-### Critical path to TestFlight
+| Work | Notes |
+|---|---|
+| Live Photo motion in fullscreen (R16) | Live Photos currently render as stills everywhere. `PHLivePhotoView` in `FullscreenView` is the remaining piece. |
+| Thumbnail preheating | `ThumbnailProvider.startCaching` exists but nothing calls it. Wire it to the visible window ± a screen for smoother fast scrolls. |
+| Onboarding polish | No way to go *back* a step, and no empty-state guidance if the user has no albums yet. |
+| Real-library validation | Everything so far has run against synthetic fixtures or a simulator with no photos. The album model and scroll performance need a real 100k-asset library to be trusted. |
 
-App Store Connect has **rejected uploads not built with Xcode 26 / iOS 26 SDK since 2026-04-28**
-([Apple](https://developer.apple.com/news/upcoming-requirements/)). Xcode 16.3 cannot ship — this is why the plan's
-"Phase 0 hello-world to TestFlight first" ordering was abandoned. **The signing/upload chain is still completely
-unproven.** Prove it with a throwaway archive as soon as Xcode 26.6 is in place, before building more features.
+### Things that bit, so they don't bite again
 
-Then, per PLAN.md §7: App Store Connect API key → `~/.appstoreconnect/private_keys/` + `.env` → register
-`org.dudgeon.sameage` → create the app record in the browser (no ASC API endpoint exists for this) → archive with
-`-allowProvisioningUpdates` → `xcodebuild -exportArchive` with `destination: upload` → internal TestFlight group.
-`ITSAppUsesNonExemptEncryption=NO` is already set, so no export-compliance prompt per upload.
+- **App Store Connect requires Xcode 26+ since 2026-04-28.** `release.sh` fail-stops on an older
+  Xcode rather than discovering it at upload time.
+- **An app icon is mandatory to upload.** The first upload was rejected for a missing
+  `CFBundleIconName` and 120×120 asset after passing every other check. `scripts/make_app_icon.swift`
+  regenerates it; the icon must be **opaque** (no alpha) or the App Store rejects it.
+- **The app record cannot be created via API** — browser only, one time. Already done.
+- **`set -o pipefail` plus `| head`/`| tail`** gave `xcodebuild` a SIGPIPE and aborted `release.sh`
+  with exit 141 and an empty log. Don't reintroduce pipefail there.
+- **Native `<select>` menus can't be driven** by the browser automation available here (clicks,
+  `form_input` and synthetic keys all fail silently). Setting `value` through the native setter plus
+  a dispatched `change` event is what works on App Store Connect's React forms.
 
 ---
 
 ## 6. Open questions for the user
 
-1. **Apple Developer Program membership** — believed active (a Developer ID cert was issued to team `R39EF29X3Y`
-   on 2026-04-26, and those are paid-members-only), but never confirmed on the membership page.
+1. **App name.** The record is `SameAgeScroller` because "SameAge" was already taken on the App
+   Store. Renaming is one field in App Store Connect any time before public release; the bundle ID
+   is unaffected.
 2. **Deployment target** is iOS 17.0; the phone runs iOS 18.x, so this is safe but could be raised.
-3. **Nothing is committed.** The repo has zero commits. Worth doing before or right after the upgrade.
+3. **The album model needs a real trial.** Materialise each kid's People album into
+   `SameAge – <Kid>` in Photos and see whether the one-time setup and the manual refresh actually
+   feel acceptable in practice. That judgement can't be made from fixtures.
