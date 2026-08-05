@@ -11,6 +11,18 @@ struct SameAgeApp: App {
                 .environmentObject(state)
                 .preferredColorScheme(nil)   // follow system light/dark
                 .onAppear { state.load() }
+                .task {
+                    #if DEBUG
+                    // `-seedTestLibrary` populates the *simulator's* library with two
+                    // albums; `-useSeededKids` then wires them up so a test run lands
+                    // straight in the feed on the real PhotoKit path.
+                    await LibrarySeeder.seedIfRequested()
+                    if ProcessInfo.processInfo.arguments.contains("-useSeededKids") {
+                        let kids = LibrarySeeder.seededKidProfiles()
+                        if kids.count == 2 { state.kids = kids }
+                    }
+                    #endif
+                }
         }
     }
 }
@@ -32,6 +44,21 @@ struct RootView: View {
 
     @State private var synthetic = SyntheticLibrary.makeItems()
     @State private var showingSettings = false
+
+    /// `-delayedSynthetic` withholds the fixtures until after the first render, mimicking
+    /// PhotoKit delivering asynchronously. This is the exact shape of the bug that shipped
+    /// in 0.1 (1) — the feed configured once against empty arrays and then ignored the real
+    /// data — and it is invisible to a fixture set that is present at first render.
+    @State private var deliveredSynthetic: (a: [FeedItem], b: [FeedItem]) = ([], [])
+    @State private var syntheticGeneration = 0
+
+    private static var delaysSynthetic: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-delayedSynthetic")
+        #else
+        return false
+        #endif
+    }
 
     /// The feed is black by design, so an empty feed is indistinguishable from a broken
     /// one. This makes every non-content state say what it is.
@@ -87,12 +114,19 @@ struct RootView: View {
         Group {
             if Self.useSynthetic {
                 FeedView(
-                    itemsA: synthetic.a,
-                    itemsB: synthetic.b,
+                    itemsA: Self.delaysSynthetic ? deliveredSynthetic.a : synthetic.a,
+                    itemsB: Self.delaysSynthetic ? deliveredSynthetic.b : synthetic.b,
                     axisMax: SyntheticLibrary.olderMaxAgeMonths,
                     railOnLeft: state.railOnLeft,
-                    filter: $state.filter
+                    filter: $state.filter,
+                    contentVersion: syntheticGeneration
                 )
+                .task {
+                    guard Self.delaysSynthetic else { return }
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    deliveredSynthetic = synthetic
+                    syntheticGeneration += 1     // must reach the feed
+                }
             } else if state.isConfigured {
                 FeedView(
                     itemsA: indexer.itemsA,
