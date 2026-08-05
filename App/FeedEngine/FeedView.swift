@@ -149,6 +149,8 @@ struct AgeInputSheet: View {
 /// D8 — filters live in a swipe-up sheet, keeping the feed itself chrome-free.
 struct FilterSheet: View {
     @Binding var filter: FilterState
+    var onOpenSettings: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -164,6 +166,15 @@ struct FilterSheet: View {
                     Text("Media")
                 } footer: {
                     Text("Filters narrow each ribbon on its own. Density scaling keeps the two sides age-aligned.")
+                }
+
+                Section {
+                    Button {
+                        dismiss()
+                        onOpenSettings()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
                 }
             }
             .navigationTitle("Filters")
@@ -201,6 +212,7 @@ struct FeedView: View {
     @Binding var filter: FilterState
     var kidName: (Kid) -> String = { $0 == .a ? "Older" : "Younger" }
     var onToggleFavorite: (FeedItem) -> Void = { _ in }
+    var onOpenSettings: () -> Void = {}
 
     @State private var selected: FeedItem?
 
@@ -253,7 +265,7 @@ struct FeedView: View {
             AgeInputSheet(axisMax: axisMax, controller: controller)
         }
         .sheet(isPresented: $showingFilters) {
-            FilterSheet(filter: $filter)
+            FilterSheet(filter: $filter, onOpenSettings: onOpenSettings)
         }
         .fullScreenCover(item: $selected) { item in
             // The counterpart is the nearest photo *by age* in the other ribbon (R18),

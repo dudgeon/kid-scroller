@@ -15,8 +15,37 @@ final class LibraryIndexer: ObservableObject {
     @Published private(set) var itemsB: [FeedItem] = []
     @Published private(set) var isIndexing = false
     @Published private(set) var lastError: String?
+    /// True once real data has landed, whether from cache or a fresh enumeration.
+    @Published private(set) var hasContent = false
 
     private var observer: ChangeObserver?
+    private let store: IndexStoring
+
+    init(store: IndexStoring = FileIndexStore()) {
+        self.store = store
+    }
+
+    /// Launch path (R24): show the cached snapshot immediately, then re-enumerate in the
+    /// background and swap. The user never waits on PhotoKit to see their feed.
+    func start(kids: [KidProfile]) async {
+        guard kids.count == 2 else { return }
+        let older = kids.min(by: { $0.birthday < $1.birthday })!
+        let younger = kids.max(by: { $0.birthday < $1.birthday })!
+
+        if let snapshot = store.load(), snapshot.matches(older: older, younger: younger) {
+            itemsA = snapshot.itemsA
+            itemsB = snapshot.itemsB
+            hasContent = !(snapshot.itemsA.isEmpty && snapshot.itemsB.isEmpty)
+        }
+        await refresh(kids: kids)
+        startObserving(kids: kids)
+    }
+
+    /// Discards the cache. Called when albums or birthdays change, since either invalidates
+    /// every item's position on the age axis.
+    func invalidateCache() {
+        store.clear()
+    }
 
     /// Re-reads both albums. Cheap enough to call on every foreground.
     func refresh(kids: [KidProfile]) async {
@@ -38,11 +67,24 @@ final class LibraryIndexer: ObservableObject {
 
         itemsA = a
         itemsB = b
+        hasContent = !(a.isEmpty && b.isEmpty)
 
         if a.isEmpty && b.isEmpty {
             lastError = "Neither album has photos with capture dates. Check the albums in Settings."
+            // Don't cache an empty result — a transient permission or fetch failure would
+            // otherwise persist as an apparently-empty library across launches.
+            store.clear()
         } else {
             lastError = nil
+            store.save(IndexSnapshot(
+                version: IndexSnapshot.currentVersion,
+                albumA: older.albumLocalIdentifier,
+                albumB: younger.albumLocalIdentifier,
+                birthdayA: older.birthday,
+                birthdayB: younger.birthday,
+                itemsA: a, itemsB: b,
+                capturedAt: Date()
+            ))
         }
     }
 

@@ -1,5 +1,6 @@
 import UIKit
 import Photos
+import AVFoundation
 import SameAgeCore
 
 /// One photo slot in a ribbon. Pooled and recycled; never allocated during a scroll.
@@ -12,6 +13,11 @@ final class RibbonCellView: UIView {
     private var requestID: PHImageRequestID?
     /// Guards against a slow request resolving into a cell that has since been reused.
     private var currentItemID: String?
+    private var currentItem: FeedItem?
+    private var playerLayer: AVPlayerLayer?
+    private var loopObserver: NSObjectProtocol?
+
+    var isVideo: Bool { currentItem?.kind == .video }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -41,6 +47,7 @@ final class RibbonCellView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         imageView.frame = bounds
+        playerLayer?.frame = bounds
         glyph.frame = bounds
         let size = label.intrinsicContentSize
         label.frame = CGRect(x: 6, y: bounds.height - size.height - 10,
@@ -49,6 +56,7 @@ final class RibbonCellView: UIView {
 
     func configure(with item: FeedItem, targetSize: CGSize) {
         currentItemID = item.id
+        currentItem = item
 
         // A stable per-item colour shows immediately and stays visible behind an image
         // that is still loading — or permanently, for synthetic fixtures with no asset.
@@ -76,11 +84,51 @@ final class RibbonCellView: UIView {
         setNeedsLayout()
     }
 
+    /// R15 — muted, looping playback in place. Streams from the asset rather than
+    /// downloading a copy, so this adds no local storage.
+    func startVideo() {
+        guard isVideo, playerLayer == nil, let item = currentItem else { return }
+        Task { @MainActor in
+            guard let playerItem = await ThumbnailProvider.shared
+                .requestPlayerItem(identifier: item.assetIdentifier) else { return }
+            // The cell may have been recycled or scrolling resumed while this loaded.
+            guard currentItemID == item.id, playerLayer == nil else { return }
+
+            let player = AVPlayer(playerItem: playerItem)
+            player.isMuted = true                      // R15: muted in the feed
+            let layer = AVPlayerLayer(player: player)
+            layer.frame = bounds
+            layer.videoGravity = .resizeAspectFill
+            self.layer.insertSublayer(layer, above: imageView.layer)
+            playerLayer = layer
+
+            loopObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main
+            ) { [weak player] _ in
+                player?.seek(to: .zero)
+                player?.play()
+            }
+            player.play()
+            glyph.isHidden = true                      // hide the ▶ badge while playing
+        }
+    }
+
+    func stopVideo() {
+        playerLayer?.player?.pause()
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        if let loopObserver { NotificationCenter.default.removeObserver(loopObserver) }
+        loopObserver = nil
+        glyph.isHidden = false
+    }
+
     /// Cancels any in-flight request and clears state before the cell goes back in the pool.
     func prepareForReuse() {
+        stopVideo()
         if let requestID { ThumbnailProvider.shared.cancel(requestID) }
         requestID = nil
         currentItemID = nil
+        currentItem = nil
         imageView.image = nil
     }
 }
@@ -97,6 +145,20 @@ final class RibbonColumnView: UIView {
     func item(at point: CGPoint) -> FeedItem? {
         for (id, cell) in live where cell.frame.contains(point) { return liveItems[id] }
         return nil
+    }
+
+    /// Plays the highest *fully visible* video in this column, at most one at a time (R15).
+    /// Partially visible videos are skipped — a video half off-screen playing is noise.
+    func playTopmostVideo(viewportHeight: CGFloat) {
+        stopVideos()
+        let visible = live.values.filter {
+            $0.isVideo && $0.frame.minY >= 0 && $0.frame.maxY <= viewportHeight
+        }
+        visible.min { $0.frame.minY < $1.frame.minY }?.startVideo()
+    }
+
+    func stopVideos() {
+        for cell in live.values { cell.stopVideo() }
     }
 
     func setMapping(_ mapping: RibbonMapping) {
@@ -206,6 +268,7 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
     var onSelect: ((FeedItem) -> Void)?
 
     private var settleWork: DispatchWorkItem?
+    private var videosPlaying = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -336,7 +399,15 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         refresh()
+        // Any movement tears playback down immediately (R15).
+        if videosPlaying { stopVideos() }
         if !isProgrammaticScroll { cancelSettle() }
+    }
+
+    private func stopVideos() {
+        columnA.stopVideos()
+        columnB.stopVideos()
+        videosPlaying = false
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -351,7 +422,11 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
     private func scheduleSettle() {
         cancelSettle()
         let work = DispatchWorkItem { [weak self] in
+            // Both conditions matter: scrolling has stopped AND the finger is off the glass.
             guard let self, !self.scrollView.isTracking, !self.scrollView.isDecelerating else { return }
+            self.columnA.playTopmostVideo(viewportHeight: self.bounds.height)
+            self.columnB.playTopmostVideo(viewportHeight: self.bounds.height)
+            self.videosPlaying = true
             self.onSettled?(self.currentAge)
         }
         settleWork = work

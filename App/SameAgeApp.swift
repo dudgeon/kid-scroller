@@ -31,6 +31,7 @@ struct RootView: View {
     }
 
     @State private var synthetic = SyntheticLibrary.makeItems()
+    @State private var showingSettings = false
 
     var body: some View {
         Group {
@@ -58,8 +59,12 @@ struct RootView: View {
                             await indexer.setFavorite(item.isFavorite, itemID: item.id,
                                                       assetIdentifier: item.assetIdentifier)
                         }
-                    }
+                    },
+                    onOpenSettings: { showingSettings = true }
                 )
+                .sheet(isPresented: $showingSettings) {
+                    SettingsView(indexer: indexer).environmentObject(state)
+                }
                 .overlay(alignment: .top) {
                     if indexer.isIndexing {
                         Text("Indexing…")
@@ -68,9 +73,9 @@ struct RootView: View {
                             .padding(.top, 8)
                     }
                 }
-                .task {
-                    await indexer.refresh(kids: state.kids)
-                    indexer.startObserving(kids: state.kids)
+                .task(id: state.kids) {
+                    // Renders the cached snapshot first, then re-enumerates (R24).
+                    await indexer.start(kids: state.kids)
                 }
             } else {
                 OnboardingFlow()

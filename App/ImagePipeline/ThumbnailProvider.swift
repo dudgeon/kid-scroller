@@ -1,5 +1,6 @@
 import UIKit
 import Photos
+import AVFoundation
 
 /// Feeds thumbnails to the ribbon cells.
 ///
@@ -88,6 +89,24 @@ final class ThumbnailProvider {
                 guard !degraded, !resumed else { return }
                 resumed = true
                 continuation.resume(returning: image)
+            }
+        }
+    }
+
+    /// Player item for in-feed video autoplay (R15). Streams rather than downloading a
+    /// copy, so an iCloud-resident video costs no local storage.
+    func requestPlayerItem(identifier: String) async -> AVPlayerItem? {
+        guard let asset = asset(for: identifier), asset.mediaType == .video else { return nil }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .automatic
+
+        return await withCheckedContinuation { continuation in
+            var resumed = false
+            PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, _ in
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: item)
             }
         }
     }
