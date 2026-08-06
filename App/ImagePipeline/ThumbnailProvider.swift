@@ -24,6 +24,16 @@ final class ThumbnailProvider {
 
     func asset(for identifier: String) -> PHAsset? {
         if let cached = assets[identifier] { return cached }
+
+        // Never let the image pipeline be what raises the permission prompt. Onboarding
+        // asks explicitly, in context, having just explained why. Touching PhotoKit from
+        // a cell means the prompt can appear over the feed instead — and it made a
+        // fixture run, which has no real assets at all, ask for photo access.
+        // Read the status directly rather than through PhotoLibraryService, which is
+        // MainActor-isolated; this is called from cell layout on every configure.
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return nil }
+
         // Synthetic fixtures have no backing asset; cache nothing and let the caller
         // fall back to its placeholder.
         guard let asset = PHAsset.fetchAssets(

@@ -229,6 +229,43 @@ struct FeedView: View {
     private var filteredA: [FeedItem] { itemsA.filter(filter.admits) }
     private var filteredB: [FeedItem] { itemsB.filter(filter.admits) }
 
+    private var isFiltered: Bool {
+        filter.favoritesOnly || filter.kinds.count < MediaKind.allCases.count
+    }
+
+    private var filterHandle: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "chevron.up")
+                .font(.system(size: 9, weight: .bold))
+            if isFiltered {
+                HStack(spacing: 4) {
+                    if filter.favoritesOnly {
+                        Image(systemName: "heart.fill").foregroundStyle(.red)
+                    }
+                    if filter.kinds.count < MediaKind.allCases.count {
+                        Image(systemName: "line.3.horizontal.decrease")
+                    }
+                }
+                .font(.system(size: 9, weight: .semibold))
+            }
+            Capsule().frame(width: 34, height: 4)
+        }
+        .foregroundStyle(.white.opacity(0.6))
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.35), in: Capsule())
+        .padding(.bottom, 4)
+        .contentShape(Capsule())
+        .onTapGesture { showingFilters = true }
+        .gesture(
+            // A swipe on the handle itself, which the scroll view never sees.
+            DragGesture(minimumDistance: 10)
+                .onEnded { if $0.translation.height < -15 { showingFilters = true } }
+        )
+        .accessibilityLabel(isFiltered ? "Filters active. Open filters and settings"
+                                       : "Open filters and settings")
+    }
+
     /// `-startAge <months>` on the launch command line, DEBUG builds only.
     static var debugStartAge: Double? {
         #if DEBUG
@@ -256,15 +293,13 @@ struct FeedView: View {
             AgeRailView(axisMax: axisMax, controller: controller, showingAgeInput: $showingAgeInput)
         }
         .background(.black)
-        // D8: swipe up anywhere in the feed to reach filters.
-        .gesture(
-            DragGesture(minimumDistance: 30)
-                .onEnded { value in
-                    if value.translation.height < -60 && abs(value.translation.width) < 60 {
-                        showingFilters = true
-                    }
-                }
-        )
+        // D8 wanted a bare swipe-up anywhere in the feed, which cannot work: the feed is
+        // driven by a UIScrollView that consumes every vertical pan, so the gesture never
+        // fired and the filters — and Settings, which lives in the same sheet — were
+        // simply unreachable. This keeps D8's swipe-up sheet and its chrome-free feed, but
+        // gives it a grab handle that is both tappable and swipe-able, and that shows when
+        // a filter is narrowing what you're seeing.
+        .overlay(alignment: .bottom) { filterHandle }
         .sheet(isPresented: $showingAgeInput) {
             AgeInputSheet(axisMax: axisMax, controller: controller)
         }

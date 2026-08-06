@@ -330,10 +330,21 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         let point = recognizer.location(in: self)
         for column in [columnA, columnB] {
             if let item = column.item(at: convert(point, to: column)) {
+                // Hand off cleanly to fullscreen: tear down any in-feed playback and drop
+                // the pending settle, or a video starts behind the fullscreen view and is
+                // found playing when it's dismissed.
+                cancelSettle()
+                stopVideos()
                 onSelect?(item)
                 return
             }
         }
+    }
+
+    /// Called when the feed goes off screen (fullscreen, sheets) so nothing plays unseen.
+    func suspendPlayback() {
+        cancelSettle()
+        stopVideos()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) unused") }

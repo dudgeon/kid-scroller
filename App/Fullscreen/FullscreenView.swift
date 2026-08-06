@@ -75,11 +75,15 @@ struct FullscreenView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 0) {
+            // Vertical, matching the feed: the age axis runs downward everywhere in this
+            // app, so paging down should mean "older" here too. Horizontal paging would
+            // have put the app's one spatial metaphor at right angles to itself.
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
                     ForEach(items) { item in
-                        page(for: swapped ? (counterpart(for: item) ?? item) : item)
-                            .containerRelativeFrame(.horizontal)
+                        page(for: swapped ? (counterpart(for: item) ?? item) : item,
+                             isActive: item.id == currentID)
+                            .containerRelativeFrame(.vertical)
                             .id(item.id)
                     }
                 }
@@ -116,9 +120,14 @@ struct FullscreenView: View {
 
     // MARK: - Pieces
 
-    private func page(for item: FeedItem) -> some View {
+    @ViewBuilder
+    private func page(for item: FeedItem, isActive: Bool) -> some View {
         Group {
-            if let image = images[item.id] {
+            if item.kind == .video {
+                // Fullscreen previously only ever requested a still, so opening a video
+                // showed its poster frame and never played.
+                FullscreenVideoPage(item: item, isActive: isActive, poster: images[item.id])
+            } else if let image = images[item.id] {
                 Image(uiImage: image).resizable().scaledToFit()
             } else {
                 ProgressView().tint(.white)
