@@ -14,6 +14,8 @@ struct FullscreenView: View {
     /// D7: the inset sits bottom-right and tapping it swaps which photo is large.
     @State private var swapped = false
     @State private var images: [String: UIImage] = [:]
+    /// Items whose full-quality image has landed, so a late degraded frame can't undo it.
+    @State private var fullyLoaded: Set<String> = []
     @State private var placeName: String?
     @State private var isFavorite: Bool
     @State private var shareItems: [Any]?
@@ -58,7 +60,7 @@ struct FullscreenView: View {
                 .padding(16)
             }
         }
-        .task { await loadImages() }
+        .onAppear { startProgressiveLoad() }
         .task { await resolvePlaceName() }
         .sheet(isPresented: Binding(get: { shareItems != nil }, set: { if !$0 { shareItems = nil } })) {
             if let shareItems { ShareSheet(items: shareItems) }
@@ -141,10 +143,27 @@ struct FullscreenView: View {
 
     // MARK: - Loading
 
-    private func loadImages() async {
-        for item in [tapped, counterpart].compactMap({ $0 }) where images[item.id] == nil {
-            if let image = await ThumbnailProvider.shared.requestFull(identifier: item.assetIdentifier) {
+    /// Progressive load: PhotoKit's `.opportunistic` delivery calls back first with a fast
+    /// low-resolution frame — often already cached from the feed — and again with full
+    /// quality. Showing the degraded frame immediately is what removes the black screen
+    /// while a large or iCloud-resident photo loads.
+    private func startProgressiveLoad() {
+        let scale = UIScreen.main.scale
+        let bounds = UIScreen.main.bounds
+        let target = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+
+        for item in [tapped, counterpart].compactMap({ $0 }) {
+            ThumbnailProvider.shared.request(
+                identifier: item.assetIdentifier,
+                targetSize: target,
+                contentMode: .aspectFit          // show the whole photo, don't crop
+            ) { image, isDegraded in
+                guard let image else { return }
+                // Callbacks can arrive out of order; never let a late low-resolution
+                // frame replace one that is already full quality.
+                if isDegraded && fullyLoaded.contains(item.id) { return }
                 images[item.id] = image
+                if !isDegraded { fullyLoaded.insert(item.id) }
             }
         }
     }

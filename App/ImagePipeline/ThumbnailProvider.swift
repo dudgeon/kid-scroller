@@ -44,17 +44,22 @@ final class ThumbnailProvider {
 
     /// Requests an image. The handler may be called more than once: a degraded frame
     /// followed by the full-quality one. Returns nil when there is no such asset.
+    ///
+    /// Fullscreen passes `.aspectFit`, so the whole photo is visible rather than cropped
+    /// to fill, and relies on the degraded callback to put *something* on screen
+    /// immediately instead of holding black until full quality arrives.
     @discardableResult
     func request(
         identifier: String,
         targetSize: CGSize,
+        contentMode: PHImageContentMode = .aspectFill,
         handler: @escaping (UIImage?, _ isDegraded: Bool) -> Void
     ) -> PHImageRequestID? {
         guard let asset = asset(for: identifier) else { return nil }
         return manager.requestImage(
             for: asset,
             targetSize: targetSize,
-            contentMode: .aspectFill,
+            contentMode: contentMode,
             options: options()
         ) { image, info in
             let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false

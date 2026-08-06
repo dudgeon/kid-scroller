@@ -109,21 +109,29 @@ final class LibraryIndexer: ObservableObject {
     /// Applies a favourite toggle locally first so the UI responds immediately, then
     /// writes it back to the library (R20 — the only write the app performs).
     func setFavorite(_ isFavorite: Bool, itemID: String, assetIdentifier: String) async {
-        func apply(_ items: inout [FeedItem]) {
-            guard let index = items.firstIndex(where: { $0.id == itemID }) else { return }
-            items[index].isFavorite = isFavorite
-        }
-        apply(&itemsA)
-        apply(&itemsB)
+        // Capture the real previous value *before* writing, or rollback has nothing to
+        // restore. Favourites live on the asset, so both halves of a shared photo move
+        // together (R5 + R20).
+        let previous = FavoriteEdit.currentValue(itemID: itemID, in: itemsA)
+            ?? FavoriteEdit.currentValue(itemID: itemID, in: itemsB)
+            ?? !isFavorite
+
+        applyFavorite(isFavorite, assetIdentifier: assetIdentifier)
 
         do {
             try await PhotoLibraryService.setFavorite(isFavorite, assetIdentifier: assetIdentifier)
         } catch {
-            // Roll back so the UI never claims a write that did not land.
-            apply(&itemsA)
-            apply(&itemsB)
+            applyFavorite(previous, assetIdentifier: assetIdentifier)
             lastError = "Couldn't update the favourite in Photos."
         }
+    }
+
+    private func applyFavorite(_ isFavorite: Bool, assetIdentifier: String) {
+        itemsA = FavoriteEdit.applyingToAsset(isFavorite, assetIdentifier: assetIdentifier, to: itemsA)
+        itemsB = FavoriteEdit.applyingToAsset(isFavorite, assetIdentifier: assetIdentifier, to: itemsB)
+        // Without this the feed's version is unchanged and the change never reaches the
+        // screen — the heart stays stale, and a favourites-only filter doesn't re-apply.
+        generation += 1
     }
 
     /// `PHPhotoLibraryChangeObserver` must be an NSObject; this keeps that requirement

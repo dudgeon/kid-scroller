@@ -21,6 +21,11 @@ struct SameAgeApp: App {
                         let kids = LibrarySeeder.seededKidProfiles()
                         if kids.count == 2 { state.kids = kids }
                     }
+                    // Lets the favourites filter be verified from a screenshot rather
+                    // than by simulating taps through the sheet.
+                    if ProcessInfo.processInfo.arguments.contains("-favoritesOnly") {
+                        state.filter.favoritesOnly = true
+                    }
                     #endif
                 }
         }
