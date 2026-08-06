@@ -33,12 +33,32 @@ final class ThumbnailProvider {
         return asset
     }
 
-    private func options() -> PHImageRequestOptions {
+    /// How hard to work for an image.
+    ///
+    /// Scrolling uses `.fast`: cached or quickly-derived frames only, no iCloud round
+    /// trip, no exact resize. Full-quality decoding while the feed is moving is what
+    /// makes scrolling judder, and the result is on screen for a few frames anyway.
+    /// `.high` is reserved for the two moments the viewer is actually looking at a photo
+    /// — the feed has settled, or they tapped through to fullscreen.
+    enum Quality {
+        case fast
+        case high
+    }
+
+    private func options(_ quality: Quality) -> PHImageRequestOptions {
         let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic     // degraded frame first, then full (R25)
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = true     // allow iCloud fetch on demand
         options.isSynchronous = false
+        switch quality {
+        case .fast:
+            options.deliveryMode = .fastFormat
+            options.resizeMode = .fast
+            // No network: an iCloud fetch mid-scroll is exactly the stall we're avoiding.
+            options.isNetworkAccessAllowed = false
+        case .high:
+            options.deliveryMode = .opportunistic   // degraded frame first, then full (R25)
+            options.resizeMode = .exact
+            options.isNetworkAccessAllowed = true   // iCloud fetch is fine once stopped
+        }
         return options
     }
 
@@ -53,6 +73,7 @@ final class ThumbnailProvider {
         identifier: String,
         targetSize: CGSize,
         contentMode: PHImageContentMode = .aspectFill,
+        quality: Quality = .fast,
         handler: @escaping (UIImage?, _ isDegraded: Bool) -> Void
     ) -> PHImageRequestID? {
         guard let asset = asset(for: identifier) else { return nil }
@@ -60,7 +81,7 @@ final class ThumbnailProvider {
             for: asset,
             targetSize: targetSize,
             contentMode: contentMode,
-            options: options()
+            options: options(quality)
         ) { image, info in
             let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
             handler(image, degraded)
@@ -122,14 +143,14 @@ final class ThumbnailProvider {
         let assets = identifiers.compactMap { asset(for: $0) }
         guard !assets.isEmpty else { return }
         manager.startCachingImages(for: assets, targetSize: targetSize,
-                                   contentMode: .aspectFill, options: options())
+                                   contentMode: .aspectFill, options: options(.fast))
     }
 
     func stopCaching(identifiers: [String], targetSize: CGSize) {
         let assets = identifiers.compactMap { asset(for: $0) }
         guard !assets.isEmpty else { return }
         manager.stopCachingImages(for: assets, targetSize: targetSize,
-                                  contentMode: .aspectFill, options: options())
+                                  contentMode: .aspectFill, options: options(.fast))
     }
 
     func stopAllCaching() {

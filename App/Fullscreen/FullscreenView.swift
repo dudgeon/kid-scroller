@@ -3,51 +3,92 @@ import CoreLocation
 import SameAgeCore
 
 /// Fullscreen photo with metadata and the age-matched counterpart (R17–R19, D7).
+///
+/// Swiping pages through the tapped kid's ribbon in age order, and the inset re-resolves
+/// to whatever the *other* kid's nearest photo by age is — so the pair stays age-matched
+/// exactly as it does in the feed, rather than the inset freezing on the photo you
+/// happened to open.
 struct FullscreenView: View {
-    let tapped: FeedItem
-    let counterpart: FeedItem?
+    let items: [FeedItem]
+    let counterpartItems: [FeedItem]
+    let startID: String
     let name: (Kid) -> String
     let onToggleFavorite: (FeedItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
-    /// D7: the inset sits bottom-right and tapping it swaps which photo is large.
+    /// Which photo is on screen, by id. Driven by `scrollPosition`, which pairs with
+    /// `LazyHStack` so only the visible pages are ever built — a paged `TabView` would
+    /// materialise all of them, which is fine for a fixture and ruinous for a real album.
+    @State private var currentID: String?
+    /// D7: the inset sits bottom-right; tapping it swaps which photo is large.
     @State private var swapped = false
     @State private var images: [String: UIImage] = [:]
-    /// Items whose full-quality image has landed, so a late degraded frame can't undo it.
     @State private var fullyLoaded: Set<String> = []
+    /// Favourite changes made in this session, keyed by item id — the `items` array is a
+    /// snapshot and won't reflect them.
+    @State private var favoriteOverrides: [String: Bool] = [:]
     @State private var placeName: String?
-    @State private var isFavorite: Bool
     @State private var shareItems: [Any]?
     @State private var isPreparingShare = false
 
-    init(tapped: FeedItem, counterpart: FeedItem?,
+    init(items: [FeedItem], counterpartItems: [FeedItem], startID: String,
          name: @escaping (Kid) -> String,
          onToggleFavorite: @escaping (FeedItem) -> Void) {
-        self.tapped = tapped
-        self.counterpart = counterpart
+        self.items = items
+        self.counterpartItems = counterpartItems
+        self.startID = startID
         self.name = name
         self.onToggleFavorite = onToggleFavorite
-        _isFavorite = State(initialValue: tapped.isFavorite)
+        _currentID = State(initialValue: startID)
     }
 
-    /// Which item is currently large. Swapping is presentation-only — `tapped` stays the
-    /// one whose favourite state the toolbar edits, so the control never silently retargets.
-    private var large: FeedItem { swapped ? (counterpart ?? tapped) : tapped }
-    private var small: FeedItem? { swapped ? tapped : counterpart }
+    // MARK: - Derived state
+
+    private var index: Int {
+        items.firstIndex { $0.id == currentID } ?? 0
+    }
+
+    private var current: FeedItem? {
+        items.first { $0.id == currentID } ?? items.first
+    }
+
+    private func counterpart(for item: FeedItem) -> FeedItem? {
+        CounterpartFinder.nearest(toAge: item.ageMonths, in: counterpartItems)
+    }
+
+    private var large: FeedItem? {
+        guard let current else { return nil }
+        return swapped ? counterpart(for: current) : current
+    }
+
+    private var small: FeedItem? {
+        guard let current else { return nil }
+        return swapped ? current : counterpart(for: current)
+    }
+
+    private func isFavorite(_ item: FeedItem) -> Bool {
+        favoriteOverrides[item.id] ?? item.isFavorite
+    }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let image = images[large.id] {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .ignoresSafeArea()
-            } else {
-                ProgressView().tint(.white)
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(items) { item in
+                        page(for: swapped ? (counterpart(for: item) ?? item) : item)
+                            .containerRelativeFrame(.horizontal)
+                            .id(item.id)
+                    }
+                }
+                .scrollTargetLayout()
             }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $currentID)
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea()
 
             VStack {
                 topBar
@@ -60,7 +101,12 @@ struct FullscreenView: View {
                 .padding(16)
             }
         }
-        .onAppear { startProgressiveLoad() }
+        .onAppear { loadAroundCurrent() }
+        .onChange(of: currentID) { _, _ in
+            placeName = nil
+            loadAroundCurrent()
+            Task { await resolvePlaceName() }
+        }
         .task { await resolvePlaceName() }
         .sheet(isPresented: Binding(get: { shareItems != nil }, set: { if !$0 { shareItems = nil } })) {
             if let shareItems { ShareSheet(items: shareItems) }
@@ -70,21 +116,41 @@ struct FullscreenView: View {
 
     // MARK: - Pieces
 
+    private func page(for item: FeedItem) -> some View {
+        Group {
+            if let image = images[item.id] {
+                Image(uiImage: image).resizable().scaledToFit()
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var topBar: some View {
         HStack {
             Button { dismiss() } label: {
                 Image(systemName: "xmark").font(.title3.weight(.semibold))
             }
             Spacer()
-            Button {
-                isFavorite.toggle()
-                var updated = tapped
-                updated.isFavorite = isFavorite
-                onToggleFavorite(updated)          // R20 — the only library write
-            } label: {
-                Image(systemName: isFavorite ? "heart.fill" : "heart")
-                    .font(.title3)
-                    .foregroundStyle(isFavorite ? .red : .white)
+            if !items.isEmpty {
+                Text("\(index + 1) of \(items.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+            Spacer()
+            if let current {
+                Button {
+                    let next = !isFavorite(current)
+                    favoriteOverrides[current.id] = next
+                    var updated = current
+                    updated.isFavorite = next
+                    onToggleFavorite(updated)          // R20 — the only library write
+                } label: {
+                    Image(systemName: isFavorite(current) ? "heart.fill" : "heart")
+                        .font(.title3)
+                        .foregroundStyle(isFavorite(current) ? .red : .white)
+                }
             }
             Button {
                 Task { await prepareShare() }
@@ -95,7 +161,7 @@ struct FullscreenView: View {
                     Image(systemName: "square.and.arrow.up").font(.title3)
                 }
             }
-            .disabled(counterpart == nil || isPreparingShare)
+            .disabled(small == nil || isPreparingShare)
             .padding(.leading, 8)
         }
         .foregroundStyle(.white)
@@ -103,17 +169,20 @@ struct FullscreenView: View {
         .padding(.top, 12)
     }
 
+    @ViewBuilder
     private var metadata: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("\(name(large.kid)) · \(AgeFormatter.short(months: large.ageMonths))")
-                .font(.headline)
-            Text(large.captureDate.formatted(date: .abbreviated, time: .omitted)
-                 + (placeName.map { " · \($0)" } ?? ""))
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.8))
+        if let large {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(name(large.kid)) · \(AgeFormatter.short(months: large.ageMonths))")
+                    .font(.headline)
+                Text(large.captureDate.formatted(date: .abbreviated, time: .omitted)
+                     + (placeName.map { " · \($0)" } ?? ""))
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .foregroundStyle(.white)
+            .shadow(radius: 6)
         }
-        .foregroundStyle(.white)
-        .shadow(radius: 6)
     }
 
     private func inset(for item: FeedItem) -> some View {
@@ -143,34 +212,47 @@ struct FullscreenView: View {
 
     // MARK: - Loading
 
-    /// Progressive load: PhotoKit's `.opportunistic` delivery calls back first with a fast
-    /// low-resolution frame — often already cached from the feed — and again with full
-    /// quality. Showing the degraded frame immediately is what removes the black screen
-    /// while a large or iCloud-resident photo loads.
-    private func startProgressiveLoad() {
+    /// Loads the current photo and its immediate neighbours, so a swipe lands on an image
+    /// that is already there rather than on a spinner.
+    private func loadAroundCurrent() {
+        var wanted: [FeedItem] = []
+        for offset in (index - 1)...(index + 1) where items.indices.contains(offset) {
+            let item = items[offset]
+            wanted.append(item)
+            if let partner = counterpart(for: item) { wanted.append(partner) }
+        }
+        for item in wanted where !fullyLoaded.contains(item.id) {
+            load(item)
+        }
+    }
+
+    /// `.opportunistic` delivery calls back first with a fast low-resolution frame — often
+    /// already cached by the feed — and again at full quality. Showing the degraded frame
+    /// immediately is what removes the black screen while a large or iCloud-resident photo
+    /// loads.
+    private func load(_ item: FeedItem) {
         let scale = UIScreen.main.scale
         let bounds = UIScreen.main.bounds
         let target = CGSize(width: bounds.width * scale, height: bounds.height * scale)
 
-        for item in [tapped, counterpart].compactMap({ $0 }) {
-            ThumbnailProvider.shared.request(
-                identifier: item.assetIdentifier,
-                targetSize: target,
-                contentMode: .aspectFit          // show the whole photo, don't crop
-            ) { image, isDegraded in
-                guard let image else { return }
-                // Callbacks can arrive out of order; never let a late low-resolution
-                // frame replace one that is already full quality.
-                if isDegraded && fullyLoaded.contains(item.id) { return }
-                images[item.id] = image
-                if !isDegraded { fullyLoaded.insert(item.id) }
-            }
+        ThumbnailProvider.shared.request(
+            identifier: item.assetIdentifier,
+            targetSize: target,
+            contentMode: .aspectFit,      // show the whole photo, don't crop
+            quality: .high                // the viewer is looking at this one
+        ) { image, isDegraded in
+            guard let image else { return }
+            // Callbacks can arrive out of order; never let a late low-resolution frame
+            // replace one that is already full quality.
+            if isDegraded && fullyLoaded.contains(item.id) { return }
+            images[item.id] = image
+            if !isDegraded { fullyLoaded.insert(item.id) }
         }
     }
 
     /// R17 — show a place name rather than raw coordinates when one is available.
     private func resolvePlaceName() async {
-        guard let location = large.location else { return }
+        guard let location = large?.location else { return }
         let placemarks = try? await CLGeocoder().reverseGeocodeLocation(
             CLLocation(latitude: location.latitude, longitude: location.longitude)
         )
@@ -179,20 +261,20 @@ struct FullscreenView: View {
 
     /// R19 — a side-by-side composite of the matched pair, both ages labelled.
     private func prepareShare() async {
-        guard let counterpart else { return }
+        guard let current, let partner = counterpart(for: current) else { return }
         isPreparingShare = true
         defer { isPreparingShare = false }
 
-        async let first = ThumbnailProvider.shared.requestFull(identifier: tapped.assetIdentifier)
-        async let second = ThumbnailProvider.shared.requestFull(identifier: counterpart.assetIdentifier)
-        guard let tappedImage = await first, let counterpartImage = await second else { return }
+        async let first = ThumbnailProvider.shared.requestFull(identifier: current.assetIdentifier)
+        async let second = ThumbnailProvider.shared.requestFull(identifier: partner.assetIdentifier)
+        guard let currentImage = await first, let partnerImage = await second else { return }
 
-        // Always order older kid on the left, so shared images are consistent.
-        let tappedSide = ShareComposer.Side(image: tappedImage, name: name(tapped.kid),
-                                            ageMonths: tapped.ageMonths)
-        let otherSide = ShareComposer.Side(image: counterpartImage, name: name(counterpart.kid),
-                                           ageMonths: counterpart.ageMonths)
-        let (left, right) = tapped.kid == .a ? (tappedSide, otherSide) : (otherSide, tappedSide)
+        let currentSide = ShareComposer.Side(image: currentImage, name: name(current.kid),
+                                             ageMonths: current.ageMonths)
+        let partnerSide = ShareComposer.Side(image: partnerImage, name: name(partner.kid),
+                                             ageMonths: partner.ageMonths)
+        // Older kid always on the left, so shared images are consistent.
+        let (left, right) = current.kid == .a ? (currentSide, partnerSide) : (partnerSide, currentSide)
 
         if let composite = ShareComposer.composite(left: left, right: right) {
             shareItems = [composite]

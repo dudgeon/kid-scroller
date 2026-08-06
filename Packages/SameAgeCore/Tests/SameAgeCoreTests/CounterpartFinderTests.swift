@@ -57,3 +57,53 @@ final class CounterpartFinderTests: XCTestCase {
         XCTAssertNil(CounterpartFinder.gap(fromAge: 20, to: nil))
     }
 }
+
+/// Invariants for paging through fullscreen: advancing the primary photo must advance the
+/// age-matched counterpart with it, never backwards.
+final class CounterpartPagingTests: XCTestCase {
+
+    private func ribbon(_ ages: [Double], kid: Kid) -> [FeedItem] {
+        ages.enumerated().map { index, age in
+            FeedItem(assetIdentifier: "\(kid.rawValue)-\(index)", kid: kid,
+                     captureDate: Date(timeIntervalSinceReferenceDate: age * 2_629_746),
+                     ageMonths: age, kind: .photo, aspectRatio: 0.75)
+        }
+    }
+
+    /// Paging forward through one kid must never move the other kid backwards in age —
+    /// that would read as the sibling ribbon jumping around at random.
+    func testCounterpartNeverGoesBackwardsWhilePagingForward() {
+        let primary = ribbon(stride(from: 0.5, through: 90, by: 0.8).map { $0 }, kid: .a)
+        let other = ribbon(stride(from: 1.2, through: 60, by: 2.3).map { $0 }, kid: .b)
+
+        var previousAge = -Double.infinity
+        for item in primary {
+            guard let match = CounterpartFinder.nearest(toAge: item.ageMonths, in: other) else {
+                return XCTFail("expected a counterpart for every page")
+            }
+            XCTAssertGreaterThanOrEqual(match.ageMonths, previousAge,
+                                        "counterpart jumped backwards at \(item.ageMonths)mo")
+            previousAge = match.ageMonths
+        }
+    }
+
+    /// Past the younger kid's last photo, every further page holds on their most recent
+    /// one rather than showing nothing (R6).
+    func testCounterpartHoldsPastTheYoungerKidsLastPhoto() {
+        let primary = ribbon([40, 60, 80, 100], kid: .a)
+        let other = ribbon([10, 20, 30], kid: .b)
+
+        let matches = primary.compactMap { CounterpartFinder.nearest(toAge: $0.ageMonths, in: other) }
+        XCTAssertEqual(matches.count, primary.count)
+        XCTAssertTrue(matches.allSatisfy { $0.ageMonths == 30 },
+                      "should hold the younger kid's last photo")
+    }
+
+    /// Every page must resolve to something; an empty inset would be a dead end.
+    func testEveryPageResolvesACounterpart() {
+        let primary = ribbon([1, 5, 9], kid: .a)
+        XCTAssertTrue(primary.allSatisfy {
+            CounterpartFinder.nearest(toAge: $0.ageMonths, in: ribbon([7], kid: .b)) != nil
+        })
+    }
+}

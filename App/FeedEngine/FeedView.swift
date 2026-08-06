@@ -272,14 +272,13 @@ struct FeedView: View {
             FilterSheet(filter: $filter, onOpenSettings: onOpenSettings)
         }
         .fullScreenCover(item: $selected) { item in
-            // The counterpart is the nearest photo *by age* in the other ribbon (R18),
-            // drawn from the filtered pool so it honours the current filters.
+            // Hand over the whole ribbon so fullscreen can page through it, with the other
+            // kid's ribbon for age-matching (R18). Both come from the filtered pools, so
+            // paging honours the current filters exactly as the feed does.
             FullscreenView(
-                tapped: item,
-                counterpart: CounterpartFinder.nearest(
-                    toAge: item.ageMonths,
-                    in: item.kid == .a ? filteredB : filteredA
-                ),
+                items: item.kid == .a ? filteredA : filteredB,
+                counterpartItems: item.kid == .a ? filteredB : filteredA,
+                startID: item.id,
                 name: kidName,
                 onToggleFavorite: onToggleFavorite
             )

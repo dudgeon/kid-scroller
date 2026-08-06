@@ -16,6 +16,8 @@ final class RibbonCellView: UIView {
     private var currentItem: FeedItem?
     private var playerLayer: AVPlayerLayer?
     private var loopObserver: NSObjectProtocol?
+    /// Whether this cell has already been re-fetched at full quality since it was configured.
+    private var isUpgraded = false
 
     var isVideo: Bool { currentItem?.kind == .video }
 
@@ -84,6 +86,27 @@ final class RibbonCellView: UIView {
         setNeedsLayout()
     }
 
+    /// Re-fetches at full quality once the feed has stopped moving.
+    ///
+    /// The scrolling pass deliberately asks only for fast, cache-resident frames — that is
+    /// what keeps the feed smooth — so the photo on screen may be soft. This sharpens it
+    /// at the one moment the viewer is actually looking at it, and is also the first point
+    /// at which an iCloud fetch is acceptable.
+    func upgradeImage() {
+        guard !isUpgraded, let item = currentItem, bounds.width > 0 else { return }
+        isUpgraded = true
+
+        let scale = UIScreen.main.scale
+        let pixelSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        ThumbnailProvider.shared.request(
+            identifier: item.assetIdentifier, targetSize: pixelSize, quality: .high
+        ) { [weak self] image, isDegraded in
+            // Only take the sharp frame; the degraded one is what we already have.
+            guard let self, self.currentItemID == item.id, let image, !isDegraded else { return }
+            self.imageView.image = image
+        }
+    }
+
     /// R15 — muted, looping playback in place. Streams from the asset rather than
     /// downloading a copy, so this adds no local storage.
     func startVideo() {
@@ -129,6 +152,7 @@ final class RibbonCellView: UIView {
         requestID = nil
         currentItemID = nil
         currentItem = nil
+        isUpgraded = false
         imageView.image = nil
     }
 }
@@ -147,14 +171,24 @@ final class RibbonColumnView: UIView {
         return nil
     }
 
-    /// Plays the highest *fully visible* video in this column, at most one at a time (R15).
-    /// Partially visible videos are skipped — a video half off-screen playing is noise.
+    /// Plays the topmost mostly-visible video in this column, at most one at a time (R15).
+    ///
+    /// "Mostly" rather than "fully": a tall video can never be entirely on screen, so a
+    /// strict test silently meant such clips never played at all. Requiring 60% visible
+    /// still excludes anything half off the edge, which would just be noise.
     func playTopmostVideo(viewportHeight: CGFloat) {
         stopVideos()
-        let visible = live.values.filter {
-            $0.isVideo && $0.frame.minY >= 0 && $0.frame.maxY <= viewportHeight
+        let candidates = live.values.filter { cell in
+            guard cell.isVideo, cell.frame.height > 0 else { return false }
+            let visible = min(cell.frame.maxY, viewportHeight) - max(cell.frame.minY, 0)
+            return visible / cell.frame.height >= 0.6
         }
-        visible.min { $0.frame.minY < $1.frame.minY }?.startVideo()
+        candidates.min { $0.frame.minY < $1.frame.minY }?.startVideo()
+    }
+
+    /// Sharpens every on-screen photo once the feed has stopped moving.
+    func upgradeVisibleImages() {
+        for cell in live.values { cell.upgradeImage() }
     }
 
     func stopVideos() {
@@ -391,6 +425,12 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         scrollView.setContentOffset(target, animated: animated)
         isProgrammaticScroll = false
         refresh()
+
+        // Settling is not only something a finger-scroll produces. The first render, a
+        // rail scrub and a typed age jump all leave the feed stationary too, and each
+        // should sharpen the photos and start any video. Without this, playback never
+        // began until you had scrolled and stopped at least once.
+        scheduleSettle()
     }
 
     private func refresh() {
@@ -429,6 +469,10 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         let work = DispatchWorkItem { [weak self] in
             // Both conditions matter: scrolling has stopped AND the finger is off the glass.
             guard let self, !self.scrollView.isTracking, !self.scrollView.isDecelerating else { return }
+            // Settling is the moment the viewer is actually looking: sharpen the photos
+            // and start the topmost video.
+            self.columnA.upgradeVisibleImages()
+            self.columnB.upgradeVisibleImages()
             self.columnA.playTopmostVideo(viewportHeight: self.bounds.height)
             self.columnB.playTopmostVideo(viewportHeight: self.bounds.height)
             self.videosPlaying = true
