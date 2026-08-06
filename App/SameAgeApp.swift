@@ -140,6 +140,7 @@ struct RootView: View {
                     railOnLeft: state.railOnLeft,
                     filter: $state.filter,
                     contentVersion: indexer.generation,
+                    hidden: state.hiddenAssetIDs,
                     kidName: { kid in
                         // Ribbon A is always the older kid; the axis runs to their age.
                         kid == .a ? (state.older?.name ?? "Older") : (state.younger?.name ?? "Younger")
@@ -150,7 +151,8 @@ struct RootView: View {
                                                       assetIdentifier: item.assetIdentifier)
                         }
                     },
-                    onOpenSettings: { showingSettings = true }
+                    onOpenSettings: { showingSettings = true },
+                    onHide: { item in state.hide(assetIdentifier: item.assetIdentifier) }
                 )
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(indexer: indexer).environmentObject(state)

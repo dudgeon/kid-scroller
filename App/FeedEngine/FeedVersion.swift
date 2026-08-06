@@ -19,13 +19,15 @@ enum FeedVersion {
         filter: FilterState,
         contentVersion: Int,
         axisMax: Double,
-        railOnLeft: Bool
+        railOnLeft: Bool,
+        hiddenVersion: Int = 0
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(filter)
         hasher.combine(contentVersion)
         hasher.combine(axisMax)
         hasher.combine(railOnLeft)
+        hasher.combine(hiddenVersion)
         return hasher.finalize()
     }
 }

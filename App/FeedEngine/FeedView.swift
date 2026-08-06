@@ -26,6 +26,8 @@ struct FeedRepresentable: UIViewRepresentable {
     /// timeline can be screenshotted deterministically without simulating gestures.
     let initialAge: Double?
     let onSelect: (FeedItem) -> Void
+    let onLongPress: (FeedItem) -> Void
+    let onChromeChange: (Bool) -> Void
 
     func makeUIView(context: Context) -> FeedUIView {
         let view = FeedUIView(frame: .zero)
@@ -34,6 +36,8 @@ struct FeedRepresentable: UIViewRepresentable {
             controller.age = age
         }
         view.onSelect = onSelect
+        view.onLongPress = onLongPress
+        view.onChromeVisibilityChange = onChromeChange
         controller.view = view
         view.configure(itemsA: itemsA, itemsB: itemsB, axisMax: axisMax,
                        railOnLeft: railOnLeft, version: version)
@@ -213,11 +217,18 @@ struct FeedView: View {
     /// Bumped by whatever supplies the items whenever they are replaced. Without it the
     /// feed cannot tell "same filter, new photos" from "nothing changed".
     var contentVersion: Int = 0
+    /// Assets the user has hidden from the app; excluded from both ribbons and fullscreen.
+    var hidden: Set<String> = []
     var kidName: (Kid) -> String = { $0 == .a ? "Older" : "Younger" }
     var onToggleFavorite: (FeedItem) -> Void = { _ in }
     var onOpenSettings: () -> Void = {}
+    var onHide: (FeedItem) -> Void = { _ in }
 
     @State private var selected: FeedItem?
+    @State private var pendingHide: FeedItem?
+    /// The names/filters bar. Starts visible so it's discoverable, then follows scroll
+    /// direction like browser chrome.
+    @State private var showChrome = true
 
     /// `@State`, not `@StateObject`, on purpose: this view must NOT re-render when the age
     /// changes, or every scroll frame would re-filter both ribbons. Only `AgeRailView`
@@ -226,44 +237,61 @@ struct FeedView: View {
     @State private var showingAgeInput = false
     @State private var showingFilters = false
 
-    private var filteredA: [FeedItem] { itemsA.filter(filter.admits) }
-    private var filteredB: [FeedItem] { itemsB.filter(filter.admits) }
+    private var filteredA: [FeedItem] {
+        itemsA.filter { filter.admits($0) && !hidden.contains($0.assetIdentifier) }
+    }
+    private var filteredB: [FeedItem] {
+        itemsB.filter { filter.admits($0) && !hidden.contains($0.assetIdentifier) }
+    }
 
     private var isFiltered: Bool {
         filter.favoritesOnly || filter.kinds.count < MediaKind.allCases.count
     }
 
-    private var filterHandle: some View {
-        VStack(spacing: 4) {
-            Image(systemName: "chevron.up")
-                .font(.system(size: 9, weight: .bold))
-            if isFiltered {
-                HStack(spacing: 4) {
-                    if filter.favoritesOnly {
-                        Image(systemName: "heart.fill").foregroundStyle(.red)
-                    }
-                    if filter.kinds.count < MediaKind.allCases.count {
-                        Image(systemName: "line.3.horizontal.decrease")
-                    }
+    /// The top ribbon: who you're looking at, and what's narrowing the view. Tapping the
+    /// names manages people, albums and birthdays; the trailing button opens filters.
+    private var chromeBar: some View {
+        HStack(spacing: 12) {
+            Button(action: onOpenSettings) {
+                HStack(spacing: 7) {
+                    Image(systemName: "person.2.fill").font(.caption)
+                    Text("\(kidName(.a)) · \(kidName(.b))")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
                 }
-                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(.white.opacity(0.14), in: Capsule())
             }
-            Capsule().frame(width: 34, height: 4)
+            .accessibilityLabel("Manage people and albums")
+
+            Spacer()
+
+            Button { showingFilters = true } label: {
+                HStack(spacing: 5) {
+                    if filter.favoritesOnly {
+                        Image(systemName: "heart.fill").foregroundStyle(.red).font(.caption)
+                    }
+                    Image(systemName: isFiltered
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
+                        .font(.title3)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .frame(height: 36)
+                .background(.white.opacity(0.14), in: Capsule())
+            }
+            .accessibilityLabel(isFiltered ? "Filters active. Open filters" : "Open filters")
         }
-        .foregroundStyle(.white.opacity(0.6))
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .background(.black.opacity(0.35), in: Capsule())
-        .padding(.bottom, 4)
-        .contentShape(Capsule())
-        .onTapGesture { showingFilters = true }
-        .gesture(
-            // A swipe on the handle itself, which the scroll view never sees.
-            DragGesture(minimumDistance: 10)
-                .onEnded { if $0.translation.height < -15 { showingFilters = true } }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+        .background(
+            LinearGradient(colors: [.black.opacity(0.75), .black.opacity(0)],
+                           startPoint: .top, endPoint: .bottom)
         )
-        .accessibilityLabel(isFiltered ? "Filters active. Open filters and settings"
-                                       : "Open filters and settings")
     }
 
     /// `-startAge <months>` on the launch command line, DEBUG builds only.
@@ -283,23 +311,44 @@ struct FeedView: View {
                 itemsA: filteredA, itemsB: filteredB,
                 axisMax: axisMax, railOnLeft: railOnLeft,
                 version: FeedVersion.compute(filter: filter, contentVersion: contentVersion,
-                                             axisMax: axisMax, railOnLeft: railOnLeft),
+                                             axisMax: axisMax, railOnLeft: railOnLeft,
+                                             hiddenVersion: hidden.hashValue),
                 controller: controller,
                 initialAge: Self.debugStartAge,
-                onSelect: { selected = $0 }
+                onSelect: { selected = $0 },
+                onLongPress: { pendingHide = $0 },
+                onChromeChange: { visible in
+                    withAnimation(.easeInOut(duration: 0.2)) { showChrome = visible }
+                }
             )
             .ignoresSafeArea(edges: .bottom)
 
             AgeRailView(axisMax: axisMax, controller: controller, showingAgeInput: $showingAgeInput)
         }
         .background(.black)
-        // D8 wanted a bare swipe-up anywhere in the feed, which cannot work: the feed is
-        // driven by a UIScrollView that consumes every vertical pan, so the gesture never
-        // fired and the filters — and Settings, which lives in the same sheet — were
-        // simply unreachable. This keeps D8's swipe-up sheet and its chrome-free feed, but
-        // gives it a grab handle that is both tappable and swipe-able, and that shows when
-        // a filter is narrowing what you're seeing.
-        .overlay(alignment: .bottom) { filterHandle }
+        // Filters and people management live in a top ribbon that follows scroll
+        // direction like browser chrome: swipe back towards newborn and it appears, dig
+        // deeper and it slides away. This supersedes D8's bottom handle (and D6's
+        // no-names rule) at the user's request — the feed stays chrome-free while moving.
+        .overlay(alignment: .top) {
+            if showChrome {
+                chromeBar.transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .confirmationDialog(
+            "Hide this photo?",
+            isPresented: Binding(get: { pendingHide != nil },
+                                 set: { if !$0 { pendingHide = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Hide from SameAge", role: .destructive) {
+                if let item = pendingHide { onHide(item) }
+                pendingHide = nil
+            }
+            Button("Cancel", role: .cancel) { pendingHide = nil }
+        } message: {
+            Text("It won't appear in the feed or fullscreen. Your Photos library is untouched, and you can unhide everything in Settings.")
+        }
         .sheet(isPresented: $showingAgeInput) {
             AgeInputSheet(axisMax: axisMax, controller: controller)
         }

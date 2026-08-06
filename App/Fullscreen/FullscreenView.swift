@@ -136,11 +136,23 @@ struct FullscreenView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Every control here gets a full 44pt hit area — an icon-sized target over a photo
+    /// is exactly the "dismiss is harder than it should be" complaint.
+    private func chromeButton(_ systemName: String, tint: Color = .white,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 44, height: 44)
+                .background(.black.opacity(0.35), in: Circle())
+                .contentShape(Circle())
+        }
+    }
+
     private var topBar: some View {
         HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.title3.weight(.semibold))
-            }
+            chromeButton("xmark") { dismiss() }
             Spacer()
             if !items.isEmpty {
                 Text("\(index + 1) of \(items.count)")
@@ -149,29 +161,24 @@ struct FullscreenView: View {
             }
             Spacer()
             if let current {
-                Button {
+                chromeButton(isFavorite(current) ? "heart.fill" : "heart",
+                             tint: isFavorite(current) ? .red : .white) {
                     let next = !isFavorite(current)
                     favoriteOverrides[current.id] = next
                     var updated = current
                     updated.isFavorite = next
                     onToggleFavorite(updated)          // R20 — the only library write
-                } label: {
-                    Image(systemName: isFavorite(current) ? "heart.fill" : "heart")
-                        .font(.title3)
-                        .foregroundStyle(isFavorite(current) ? .red : .white)
                 }
             }
-            Button {
-                Task { await prepareShare() }
-            } label: {
+            Group {
                 if isPreparingShare {
-                    ProgressView().tint(.white)
+                    ProgressView().tint(.white).frame(width: 44, height: 44)
                 } else {
-                    Image(systemName: "square.and.arrow.up").font(.title3)
+                    chromeButton("square.and.arrow.up") { Task { await prepareShare() } }
                 }
             }
             .disabled(small == nil || isPreparingShare)
-            .padding(.leading, 8)
+            .padding(.leading, 4)
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 18)

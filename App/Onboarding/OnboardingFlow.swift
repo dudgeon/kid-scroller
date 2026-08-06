@@ -12,7 +12,7 @@ import SameAgeCore
 struct OnboardingFlow: View {
     @EnvironmentObject private var state: AppState
     @State private var step: Step = .welcome
-    @State private var albums: [PhotoLibraryService.AlbumSummary] = []
+    @State private var sections: [PhotoLibraryService.AlbumSection] = []
     @State private var draft: [KidProfile] = []
 
     enum Step: Equatable {
@@ -76,32 +76,49 @@ struct OnboardingFlow: View {
     }
 
     private func albumPicker(index: Int) -> some View {
-        List(albums) { album in
-            Button {
-                draft.append(KidProfile(name: "", birthday: defaultBirthday(for: index),
-                                        albumLocalIdentifier: album.id))
-                step = .details(index: index)
-            } label: {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(album.title)
-                        Text("\(album.count) photos").font(.caption).foregroundStyle(.secondary)
+        // The album already claimed for the first kid isn't offered for the second.
+        let taken = index == 1 ? draft.first?.albumLocalIdentifier : nil
+
+        return List {
+            ForEach(sections) { section in
+                let available = section.albums.filter { $0.id != taken }
+                if !available.isEmpty {
+                    Section(section.title) {
+                        ForEach(available) { album in
+                            Button {
+                                draft.append(KidProfile(name: "", birthday: defaultBirthday(for: index),
+                                                        albumLocalIdentifier: album.id))
+                                step = .details(index: index)
+                            } label: {
+                                albumRow(album)
+                            }
+                        }
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 }
             }
         }
         .navigationTitle(index == 0 ? "Album for the older kid" : "Album for the younger kid")
         .navigationBarTitleDisplayMode(.inline)
         .overlay {
-            if albums.isEmpty {
+            if sections.isEmpty {
                 ContentUnavailableView(
                     "No albums yet",
                     systemImage: "rectangle.stack.badge.plus",
                     description: Text("Create an album in Photos from each kid's People album first.")
                 )
             }
+        }
+    }
+
+    private func albumRow(_ album: PhotoLibraryService.AlbumSummary) -> some View {
+        HStack {
+            VStack(alignment: .leading) {
+                Text(album.title)
+                Text(album.folderPath.map { "\($0) · \(album.count) photos" } ?? "\(album.count) photos")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
         }
     }
 
@@ -138,15 +155,14 @@ struct OnboardingFlow: View {
             step = .permissionDenied
             return
         }
-        albums = PhotoLibraryService.userAlbums()
+        sections = PhotoLibraryService.collections()
         step = .pickAlbum(index: 0)
     }
 
     private func advance(from index: Int) {
         if index == 0 {
             // Don't offer the album already taken by the first kid.
-            albums.removeAll { $0.id == draft[0].albumLocalIdentifier }
-            step = .pickAlbum(index: 1)
+            step = .pickAlbum(index: 1)   // the picker itself excludes the taken album
         } else {
             state.kids = draft.sorted { $0.birthday < $1.birthday }
             state.save()

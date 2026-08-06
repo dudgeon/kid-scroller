@@ -300,6 +300,13 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
     var onSettled: ((Double) -> Void)?
     /// Tapping a photo opens it fullscreen (R17).
     var onSelect: ((FeedItem) -> Void)?
+    /// Long-pressing a photo offers to hide it from the app.
+    var onLongPress: ((FeedItem) -> Void)?
+    /// Scrolling up (towards newborn) reveals the top chrome; scrolling down hides it.
+    var onChromeVisibilityChange: ((Bool) -> Void)?
+
+    private var chromeVisible = true
+    private var lastOffsetY: CGFloat = 0
 
     private var settleWork: DispatchWorkItem?
     private var videosPlaying = false
@@ -324,6 +331,23 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         // hit-tested down into whichever column was touched.
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         scrollView.addGestureRecognizer(tap)
+
+        // The scroll view's pan cancels an in-flight long press as soon as the finger
+        // moves, so this only fires on a genuinely stationary press.
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.45
+        scrollView.addGestureRecognizer(longPress)
+    }
+
+    @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        let point = recognizer.location(in: self)
+        for column in [columnA, columnB] {
+            if let item = column.item(at: convert(point, to: column)) {
+                onLongPress?(item)
+                return
+            }
+        }
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
@@ -457,7 +481,32 @@ final class FeedUIView: UIView, UIScrollViewDelegate {
         refresh()
         // Any movement tears playback down immediately (R15).
         if videosPlaying { stopVideos() }
+        // Track the offset on EVERY fire, including programmatic jumps and layout-induced
+        // ones — otherwise the first user scroll after a setAge() compares against a stale
+        // origin, reads as a huge "downward scroll", and hides the chrome at launch.
+        let y = scrollView.contentOffset.y
+        let delta = y - lastOffsetY
+        lastOffsetY = y
+
+        // Browser-style chrome: swiping back towards newborn (or rubber-banding at the
+        // top) reveals the names bar; scrolling deeper hides it. Only finger-driven
+        // movement counts — layout passes and programmatic jumps say nothing about intent.
+        let userDriven = scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating
+        if userDriven {
+            if delta < -6 || y <= 0 {
+                setChromeVisible(true)
+            } else if delta > 6 {
+                setChromeVisible(false)
+            }
+        }
+
         if !isProgrammaticScroll { cancelSettle() }
+    }
+
+    private func setChromeVisible(_ visible: Bool) {
+        guard visible != chromeVisible else { return }
+        chromeVisible = visible
+        onChromeVisibilityChange?(visible)
     }
 
     private func stopVideos() {

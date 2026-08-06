@@ -47,26 +47,72 @@ final class PhotoLibraryService {
         let id: String              // PHAssetCollection.localIdentifier
         let title: String
         let count: Int
+        /// Folder path for nested albums ("Family › Kids"), nil at top level.
+        let folderPath: String?
     }
 
-    /// Every user-created album, for the onboarding picker. Smart albums are excluded:
-    /// they are system-generated and never what the user made for a kid.
-    static func userAlbums() -> [AlbumSummary] {
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "localizedTitle", ascending: true)]
-        let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: options)
+    struct AlbumSection: Identifiable, Equatable {
+        let title: String
+        let albums: [AlbumSummary]
+        var id: String { title }
+    }
 
-        var summaries: [AlbumSummary] = []
-        collections.enumerateObjects { collection, _, _ in
-            let assets = PHAsset.fetchAssets(in: collection, options: nil)
-            guard assets.count > 0 else { return }
-            summaries.append(AlbumSummary(
-                id: collection.localIdentifier,
-                title: collection.localizedTitle ?? "Untitled album",
-                count: assets.count
-            ))
+    /// Everything a kid's photos might live in, sectioned for the picker.
+    ///
+    /// Covers what PhotoKit exposes: user albums (including inside folders, walked
+    /// recursively), iCloud Shared Albums, and smart albums with content. The Photos
+    /// app's newer "Collections" surface (trips, pinned collections) has no public API —
+    /// same story as People — so folders/shared/smart is the whole reachable set.
+    static func collections() -> [AlbumSection] {
+        func summary(_ album: PHAssetCollection, path: String?) -> AlbumSummary? {
+            let count = PHAsset.fetchAssets(in: album, options: nil).count
+            guard count > 0 else { return nil }
+            return AlbumSummary(id: album.localIdentifier,
+                                title: album.localizedTitle ?? "Untitled",
+                                count: count,
+                                folderPath: path)
         }
-        return summaries
+
+        // User albums, walking folders depth-first so nested albums are reachable.
+        var userAlbums: [AlbumSummary] = []
+        func walk(_ collections: PHFetchResult<PHCollection>, path: String?) {
+            collections.enumerateObjects { collection, _, _ in
+                if let album = collection as? PHAssetCollection {
+                    if let entry = summary(album, path: path) { userAlbums.append(entry) }
+                } else if let folder = collection as? PHCollectionList {
+                    let name = folder.localizedTitle ?? "Folder"
+                    walk(PHCollection.fetchCollections(in: folder, options: nil),
+                         path: path.map { "\($0) › \(name)" } ?? name)
+                }
+            }
+        }
+        walk(PHCollectionList.fetchTopLevelUserCollections(with: nil), path: nil)
+        userAlbums.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+
+        // iCloud Shared Albums — a common place for one-kid photo streams.
+        var shared: [AlbumSummary] = []
+        PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumCloudShared, options: nil)
+            .enumerateObjects { album, _, _ in
+                if let entry = summary(album, path: nil) { shared.append(entry) }
+            }
+
+        // Smart albums that make sense as a source. Library-wide and utility ones are
+        // excluded: "Recents" is the entire library, which defeats the two-album model.
+        let excluded: Set<PHAssetCollectionSubtype> = [
+            .smartAlbumUserLibrary, .smartAlbumAllHidden, .smartAlbumRecentlyAdded
+        ]
+        var smart: [AlbumSummary] = []
+        PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .any, options: nil)
+            .enumerateObjects { album, _, _ in
+                guard !excluded.contains(album.assetCollectionSubtype) else { return }
+                if let entry = summary(album, path: nil) { smart.append(entry) }
+            }
+
+        return [
+            AlbumSection(title: "My Albums", albums: userAlbums),
+            AlbumSection(title: "Shared Albums", albums: shared),
+            AlbumSection(title: "Smart Albums", albums: smart),
+        ].filter { !$0.albums.isEmpty }
     }
 
     private static func collection(withIdentifier id: String) -> PHAssetCollection? {

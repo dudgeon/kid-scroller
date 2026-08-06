@@ -60,3 +60,17 @@ final class FeedVersionTests: XCTestCase {
                        version(filter: filter, contentVersion: 7))
     }
 }
+
+extension FeedVersionTests {
+    /// Hiding a photo doesn't change the filter or the indexer generation — it must
+    /// still reach the feed, or the "hidden" photo stays visible until the next refresh.
+    func testVersionChangesWhenHiddenSetChanges() {
+        let before = FeedVersion.compute(filter: .all, contentVersion: 3,
+                                         axisMax: 84, railOnLeft: true,
+                                         hiddenVersion: Set<String>().hashValue)
+        let after = FeedVersion.compute(filter: .all, contentVersion: 3,
+                                        axisMax: 84, railOnLeft: true,
+                                        hiddenVersion: Set(["asset-1"]).hashValue)
+        XCTAssertNotEqual(before, after, "hiding a photo would not reach the screen")
+    }
+}

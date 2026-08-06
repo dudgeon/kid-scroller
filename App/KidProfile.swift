@@ -46,17 +46,35 @@ final class AppState: ObservableObject {
         return max(older.ageMonths(at: Date()), 1)
     }
 
+    /// Assets the user hid from the app. Stored as asset identifiers, so hiding removes a
+    /// shared photo from *both* ribbons at once. Photos itself is never touched.
+    @Published var hiddenAssetIDs: Set<String> = []
+
     private let defaultsKey = "sameage.kids.v1"
+    private let hiddenKey = "sameage.hidden.v1"
 
     func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode([KidProfile].self, from: data)
-        else { return }
-        kids = decoded
+        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+           let decoded = try? JSONDecoder().decode([KidProfile].self, from: data) {
+            kids = decoded
+        }
+        if let stored = UserDefaults.standard.stringArray(forKey: hiddenKey) {
+            hiddenAssetIDs = Set(stored)
+        }
     }
 
     func save() {
         guard let data = try? JSONEncoder().encode(kids) else { return }
         UserDefaults.standard.set(data, forKey: defaultsKey)
+    }
+
+    func hide(assetIdentifier: String) {
+        hiddenAssetIDs.insert(assetIdentifier)
+        UserDefaults.standard.set(Array(hiddenAssetIDs), forKey: hiddenKey)
+    }
+
+    func unhideAll() {
+        hiddenAssetIDs = []
+        UserDefaults.standard.set([String](), forKey: hiddenKey)
     }
 }

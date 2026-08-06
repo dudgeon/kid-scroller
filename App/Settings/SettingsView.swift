@@ -10,9 +10,13 @@ struct SettingsView: View {
     @ObservedObject var indexer: LibraryIndexer
     @Environment(\.dismiss) private var dismiss
 
-    @State private var albums: [PhotoLibraryService.AlbumSummary] = []
+    @State private var sections: [PhotoLibraryService.AlbumSection] = []
     @State private var repickingKid: KidProfile.ID?
     @State private var showingContactPicker: KidProfile.ID?
+
+    private var allAlbums: [PhotoLibraryService.AlbumSummary] {
+        sections.flatMap(\.albums)
+    }
 
     var body: some View {
         NavigationStack {
@@ -71,6 +75,21 @@ struct SettingsView: View {
                 } footer: {
                     Text("New photos don't flow in on their own — add them to each kid's album in Photos, then refresh. SameAge stores only dates and sizes, never copies of your photos.")
                 }
+
+                Section {
+                    HStack {
+                        Text("Hidden photos")
+                        Spacer()
+                        Text("\(state.hiddenAssetIDs.count)")
+                            .foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Button("Unhide all", role: .destructive) {
+                        state.unhideAll()
+                    }
+                    .disabled(state.hiddenAssetIDs.isEmpty)
+                } footer: {
+                    Text("Photos you hid with a long-press in the feed. Hiding only affects SameAge, never your library.")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -90,31 +109,39 @@ struct SettingsView: View {
                     showingContactPicker = nil
                 }
             }
-            .task { albums = PhotoLibraryService.userAlbums() }
+            .task { sections = PhotoLibraryService.collections() }
         }
     }
 
     private func albumPicker(for id: KidProfile.ID) -> some View {
         NavigationStack {
-            List(albums) { album in
-                Button {
-                    if let index = state.kids.firstIndex(where: { $0.id == id }) {
-                        state.kids[index].albumLocalIdentifier = album.id
-                    }
-                    repickingKid = nil
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(album.title)
-                            Text("\(album.count) photos").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if state.kids.first(where: { $0.id == id })?.albumLocalIdentifier == album.id {
-                            Image(systemName: "checkmark").foregroundStyle(.tint)
+            List {
+                ForEach(sections) { section in
+                    Section(section.title) {
+                        ForEach(section.albums) { album in
+                            Button {
+                                if let index = state.kids.firstIndex(where: { $0.id == id }) {
+                                    state.kids[index].albumLocalIdentifier = album.id
+                                }
+                                repickingKid = nil
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(album.title)
+                                        Text(album.folderPath.map { "\($0) · \(album.count) photos" }
+                                             ?? "\(album.count) photos")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if state.kids.first(where: { $0.id == id })?.albumLocalIdentifier == album.id {
+                                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                            .tint(.primary)
                         }
                     }
                 }
-                .tint(.primary)
             }
             .navigationTitle("Choose album")
             .navigationBarTitleDisplayMode(.inline)
@@ -122,7 +149,7 @@ struct SettingsView: View {
     }
 
     private func albumTitle(for identifier: String) -> String {
-        albums.first { $0.id == identifier }?.title ?? "—"
+        allAlbums.first { $0.id == identifier }?.title ?? "—"
     }
 
     /// Persist, drop the now-stale cache, and re-index.
