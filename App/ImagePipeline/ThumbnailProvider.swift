@@ -94,7 +94,16 @@ final class ThumbnailProvider {
             options: options(quality)
         ) { image, info in
             let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-            handler(image, degraded)
+            guard let image else {
+                handler(nil, degraded)
+                return
+            }
+            // Decode off the main thread. Without this, JPEG decompression happens
+            // lazily when the layer first draws the image — i.e. on the main thread, in
+            // the middle of a scroll frame, which is felt as a hitch on every new cell.
+            image.prepareForDisplay { prepared in
+                DispatchQueue.main.async { handler(prepared ?? image, degraded) }
+            }
         }
     }
 

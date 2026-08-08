@@ -28,6 +28,7 @@ struct FeedRepresentable: UIViewRepresentable {
     let onSelect: (FeedItem) -> Void
     let onLongPress: (FeedItem) -> Void
     let onChromeChange: (Bool) -> Void
+    let onSettled: (Double) -> Void
 
     func makeUIView(context: Context) -> FeedUIView {
         let view = FeedUIView(frame: .zero)
@@ -38,6 +39,7 @@ struct FeedRepresentable: UIViewRepresentable {
         view.onSelect = onSelect
         view.onLongPress = onLongPress
         view.onChromeVisibilityChange = onChromeChange
+        view.onSettled = onSettled
         controller.view = view
         view.configure(itemsA: itemsA, itemsB: itemsB, axisMax: axisMax,
                        railOnLeft: railOnLeft, version: version)
@@ -223,6 +225,10 @@ struct FeedView: View {
     var onToggleFavorite: (FeedItem) -> Void = { _ in }
     var onOpenSettings: () -> Void = {}
     var onHide: (FeedItem) -> Void = { _ in }
+    /// Restored scroll position, in months. Debug `-startAge` wins when both are present.
+    var initialAge: Double? = nil
+    /// Fires when the feed comes to rest — the hook for persisting scroll position.
+    var onSettled: (Double) -> Void = { _ in }
 
     @State private var selected: FeedItem?
     @State private var pendingHide: FeedItem?
@@ -314,12 +320,13 @@ struct FeedView: View {
                                              axisMax: axisMax, railOnLeft: railOnLeft,
                                              hiddenVersion: hidden.hashValue),
                 controller: controller,
-                initialAge: Self.debugStartAge,
+                initialAge: Self.debugStartAge ?? initialAge,
                 onSelect: { selected = $0 },
                 onLongPress: { pendingHide = $0 },
                 onChromeChange: { visible in
                     withAnimation(.easeInOut(duration: 0.2)) { showChrome = visible }
-                }
+                },
+                onSettled: onSettled
             )
             .ignoresSafeArea(edges: .bottom)
 

@@ -164,6 +164,9 @@ final class RibbonColumnView: UIView {
     private var liveItems: [String: FeedItem] = [:]
     private var free: [RibbonCellView] = []
     private var ghosted = false
+    /// Assets currently preheated in PHCachingImageManager, with the pixel size each was
+    /// cached at (stop-caching must pass the same size to actually release it).
+    private var preheated: [String: CGSize] = [:]
 
     /// The item under a point in this column's coordinate space, if any (R17).
     func item(at point: CGPoint) -> FeedItem? {
@@ -200,6 +203,11 @@ final class RibbonColumnView: UIView {
         for (_, cell) in live { recycle(cell) }
         live.removeAll()
         liveItems.removeAll()
+        // Release this column's warm cache without touching the sibling column's.
+        for (id, size) in preheated {
+            ThumbnailProvider.shared.stopCaching(identifiers: [id], targetSize: size)
+        }
+        preheated.removeAll()
     }
 
     private func recycle(_ cell: RibbonCellView) {
@@ -256,6 +264,39 @@ final class RibbonColumnView: UIView {
             ghosted = shouldGhost
             UIView.animate(withDuration: 0.15) { self.alpha = shouldGhost ? 0.38 : 1.0 }
         }
+
+        updatePreheat(around: range)
+    }
+
+    /// Keeps PHCachingImageManager warm for a window either side of the viewport, so
+    /// scrolling lands on already-decoded thumbnails instead of requesting them mid-frame.
+    /// This is the single biggest scroll-smoothness lever PhotoKit offers — the manager
+    /// existed from day one but nothing ever called it.
+    private func updatePreheat(around range: Range<Int>) {
+        guard bounds.width > 0, !mapping.placed.isEmpty else { return }
+        let scale = UIScreen.main.scale
+        let margin = 14   // items either side — roughly one extra screen each way
+
+        let lo = max(0, range.lowerBound - margin)
+        let hi = min(mapping.placed.count, range.upperBound + margin)
+        guard lo < hi else { return }
+
+        var desired: [String: CGSize] = [:]
+        desired.reserveCapacity(hi - lo)
+        for index in lo..<hi {
+            let placed = mapping.placed[index]
+            desired[placed.item.assetIdentifier] = CGSize(width: bounds.width * scale,
+                                                          height: placed.height * scale)
+        }
+
+        // Only the diff hits PhotoKit; a frame where the window hasn't moved does nothing.
+        for (id, size) in desired where preheated[id] == nil {
+            ThumbnailProvider.shared.startCaching(identifiers: [id], targetSize: size)
+        }
+        for (id, size) in preheated where desired[id] == nil {
+            ThumbnailProvider.shared.stopCaching(identifiers: [id], targetSize: size)
+        }
+        preheated = desired
     }
 }
 

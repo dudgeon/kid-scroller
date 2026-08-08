@@ -38,7 +38,13 @@ final class LibraryIndexer: ObservableObject {
         let older = kids.min(by: { $0.birthday < $1.birthday })!
         let younger = kids.max(by: { $0.birthday < $1.birthday })!
 
-        if let snapshot = store.load(), snapshot.matches(older: older, younger: younger) {
+        // Decode the snapshot off the main actor: a few MB of plist decode is tens of
+        // milliseconds, and doing it on main is a visible stall on the very first frame.
+        let snapshot = await Task.detached(priority: .userInitiated) { [store] in
+            store.load()
+        }.value
+
+        if let snapshot, snapshot.matches(older: older, younger: younger) {
             itemsA = snapshot.itemsA
             itemsB = snapshot.itemsB
             hasContent = !(snapshot.itemsA.isEmpty && snapshot.itemsB.isEmpty)

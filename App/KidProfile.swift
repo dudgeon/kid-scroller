@@ -31,9 +31,17 @@ struct KidProfile: Codable, Identifiable, Equatable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var kids: [KidProfile] = []
-    @Published var filter: FilterState = .all
+    /// Persisted on every change: relaunching with favourites-only still on is what the
+    /// user expects — a filter that silently resets reads as data loss.
+    @Published var filter: FilterState = .all {
+        didSet { persistFilter() }
+    }
     /// R10 — the age rail defaults to the left edge, movable in Settings.
     @Published var railOnLeft: Bool = true
+
+    /// Where the feed last settled, in months. Deliberately NOT @Published: it's written
+    /// on every scroll settle and nothing should re-render because of it.
+    private(set) var lastAgeMonths: Double?
 
     var isConfigured: Bool { kids.count == 2 }
 
@@ -52,6 +60,15 @@ final class AppState: ObservableObject {
 
     private let defaultsKey = "sameage.kids.v1"
     private let hiddenKey = "sameage.hidden.v1"
+    private let filterKey = "sameage.filter.v1"
+    private let ageKey = "sameage.lastAge.v1"
+
+    /// Loading must happen in init, not onAppear: SwiftUI evaluates the body — and
+    /// UIViewRepresentable.makeUIView, the only place the restored age is applied —
+    /// before onAppear fires. Loading late meant restore silently used nil.
+    init() {
+        load()
+    }
 
     func load() {
         if let data = UserDefaults.standard.data(forKey: defaultsKey),
@@ -61,6 +78,25 @@ final class AppState: ObservableObject {
         if let stored = UserDefaults.standard.stringArray(forKey: hiddenKey) {
             hiddenAssetIDs = Set(stored)
         }
+        if let data = UserDefaults.standard.data(forKey: filterKey),
+           let decoded = try? JSONDecoder().decode(FilterState.self, from: data) {
+            filter = decoded
+        }
+        if UserDefaults.standard.object(forKey: ageKey) != nil {
+            lastAgeMonths = UserDefaults.standard.double(forKey: ageKey)
+        }
+    }
+
+    /// Called from the feed's settle callback — after every scroll stop, so the position
+    /// survives a memory purge without writing UserDefaults at 120 Hz mid-scroll.
+    func saveAge(_ months: Double) {
+        lastAgeMonths = months
+        UserDefaults.standard.set(months, forKey: ageKey)
+    }
+
+    private func persistFilter() {
+        guard let data = try? JSONEncoder().encode(filter) else { return }
+        UserDefaults.standard.set(data, forKey: filterKey)
     }
 
     func save() {

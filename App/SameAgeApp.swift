@@ -10,7 +10,6 @@ struct SameAgeApp: App {
             RootView()
                 .environmentObject(state)
                 .preferredColorScheme(nil)   // follow system light/dark
-                .onAppear { state.load() }
                 .task {
                     #if DEBUG
                     // `-seedTestLibrary` populates the *simulator's* library with two
@@ -124,7 +123,9 @@ struct RootView: View {
                     axisMax: SyntheticLibrary.olderMaxAgeMonths,
                     railOnLeft: state.railOnLeft,
                     filter: $state.filter,
-                    contentVersion: syntheticGeneration
+                    contentVersion: syntheticGeneration,
+                    initialAge: state.lastAgeMonths,
+                    onSettled: { state.saveAge($0) }
                 )
                 .task {
                     guard Self.delaysSynthetic else { return }
@@ -152,7 +153,9 @@ struct RootView: View {
                         }
                     },
                     onOpenSettings: { showingSettings = true },
-                    onHide: { item in state.hide(assetIdentifier: item.assetIdentifier) }
+                    onHide: { item in state.hide(assetIdentifier: item.assetIdentifier) },
+                    initialAge: state.lastAgeMonths,
+                    onSettled: { state.saveAge($0) }
                 )
                 .sheet(isPresented: $showingSettings) {
                     SettingsView(indexer: indexer).environmentObject(state)
