@@ -73,13 +73,24 @@ final class PhotoLibraryService {
                                 folderPath: path)
         }
 
+        // Legacy iPhoto/iTunes-synced collections. These migrate into modern libraries as
+        // read-only "iPhoto Events" style albums — decades-old one-off groupings that
+        // only clutter a picker meant for "which set of photos is this kid".
+        let legacySynced: Set<PHAssetCollectionSubtype> = [
+            .albumSyncedEvent, .albumSyncedFaces, .albumSyncedAlbum, .albumImported
+        ]
+
         // User albums, walking folders depth-first so nested albums are reachable.
         var userAlbums: [AlbumSummary] = []
         func walk(_ collections: PHFetchResult<PHCollection>, path: String?) {
             collections.enumerateObjects { collection, _, _ in
                 if let album = collection as? PHAssetCollection {
+                    guard !legacySynced.contains(album.assetCollectionSubtype) else { return }
                     if let entry = summary(album, path: path) { userAlbums.append(entry) }
                 } else if let folder = collection as? PHCollectionList {
+                    // Smart folders are the containers Photos wraps synced events/faces
+                    // in; skipping them prunes the whole legacy subtree at once.
+                    guard folder.collectionListType == .folder else { return }
                     let name = folder.localizedTitle ?? "Folder"
                     walk(PHCollection.fetchCollections(in: folder, options: nil),
                          path: path.map { "\($0) › \(name)" } ?? name)
